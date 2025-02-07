@@ -61,6 +61,7 @@
     <ProjectReference Include="..\Infrastructure\src\Emulator\Cores\cores-riscv_NET.csproj"/>
     <ProjectReference Include="..\Infrastructure\src\Emulator\Peripherals\Peripherals_NET.csproj"/>
     <ProjectReference Include="..\Infrastructure\src\Plugins\SampleCommandPlugin\SampleCommandPlugin_NET.csproj"/>
+    <ProjectReference Include="..\Infrastructure\src\Plugins\MqttCanBridgePlugin\MqttCanBridgePlugin_NET.csproj"/>
     <ProjectReference Include="..\Infrastructure\src\Plugins\TracePlugin\TracePlugin_NET.csproj"/>
     <ProjectReference Include="..\Plugins\WiresharkPlugin\WiresharkPlugin_NET.csproj"/>
     <ProjectReference Include="..\Plugins\VerilatorPlugin\VerilatorPlugin_NET.csproj"/>
