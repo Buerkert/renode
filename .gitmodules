@@ -1,7 +1,7 @@
 [submodule "src/Infrastructure"]
 	path = src/Infrastructure
 	url = https://github.com/Buerkert/renode-infrastructure.git
-	branch = mqtt-can-bridge
+	branch = burkert-v1.15.3
 [submodule "lib/termsharp"]
 	path = lib/termsharp
 	url = https://github.com/antmicro/termsharp.git
