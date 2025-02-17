@@ -120,6 +120,10 @@
     <Compile Include="Network\RangeMediumFunction.cs" />
     <Compile Include="Backends\Terminals\UartPtyTerminal.cs" />
     <Compile Include="Plugins\ZephyrMode.cs" />
+    <Compile Include="Plugins\UbootMode.cs" />
+    <Compile Include="Plugins\TimeSkip.cs" />
+    <Compile Include="Plugins\OsSymbolHook.cs" />
+    <Compile Include="Plugins\OsTimeSkipHook.cs" />
     <Compile Include="PlatformDescription\UserInterface\MonitorInitHandler.cs" />
     <Compile Include="PlatformDescription\UserInterface\PlatformDescriptionMachineExtensions.cs" />
     <Compile Include="Connectors\GPIOConnector.cs" />
@@ -222,6 +226,10 @@
     <ProjectReference Include="..\Infrastructure\src\Infrastructure.csproj">
       <Project>{D3F10ED0-2A3F-45D5-8524-0D562905778B}</Project>
       <Name>Infrastructure</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\lib\ELFSharp\ELFSharp\ELFSharp.csproj">
+      <Project>{CF944E09-7C14-433C-A185-161848E989B3}</Project>
+      <Name>ELFSharp</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>

@@ -17,16 +17,15 @@ using System.Text;
 
 namespace Antmicro.Renode.Peripherals.Plugins
 {
-    public static class ZephyrMode
+    public static class TimeSkip
     {
-        public static void EnableZephyrMode(this ICPU cpu)
+        public static void EnableTimeSkip(this ICPU cpu, string symbol, ulong usPerTick = 1)
         {
-            OsTimeSkipHook.Enable(cpu, "z_impl_k_busy_wait");
+            OsTimeSkipHook.Enable(cpu, symbol, usPerTick);
         }
 
-        public static void DisableZephyrMode(this ICPU cpu)
-        {
-            OsSymbolHook.Disable(cpu, "z_impl_k_busy_wait");
+        public static void DisableTimeSkip(this ICPU cpu, string symbol) {
+            OsSymbolHook.Disable(cpu, symbol);
         }
     }
 }
