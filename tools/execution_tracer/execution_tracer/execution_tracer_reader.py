@@ -242,13 +242,13 @@ class LLVMDisassembler():
         try:
             self.lib = cdll.LoadLibrary(llvm_disas_path)
         except OSError:
-            raise Exception('Could not find valid `libllvm-disas` library. Please specify the correct path with the --llvm-disas-path argument.')
+            raise FileNotFoundError('Could not find valid `libllvm-disas` library. Please specify the correct path with the --llvm-disas-path argument.')
 
         self.__init_library()
 
         self._context = self.lib.llvm_create_disasm_cpu(c_char_p(triple.encode('utf-8')), c_char_p(cpu.encode('utf-8')))
         if not self._context:
-            raise Exception('CPU or triple name not detected by LLVM. Disassembling will not be possible.')
+            raise RuntimeError('CPU or triple name not detected by LLVM. Disassembling will not be possible.')
 
     def __del__(self):
         if  hasattr(self, '_context'):
@@ -284,6 +284,7 @@ def handle_coverage(args, trace_data):
         substitute_paths=args.sub_source_path,
         debug=args.debug,
         print_unmatched_address=args.print_unmatched_address,
+        lazy_line_cache=args.lazy_line_cache,
     )
 
     report = coverage_config.report_coverage(trace_data)
@@ -334,6 +335,7 @@ def main():
     cov_parser.add_argument("--coverview-config", default=None, type=str, help="Provide parameters for Coverview integration configuration JSON")
     cov_parser.add_argument("--print-unmatched-address", default=False, action="store_true", help="Print addresses not matched to any source lines")
     cov_parser.add_argument("--sub-source-path", default=[], nargs='*', action='extend', type=dwarf.PathSubstitution.from_arg, help="Substitute a part of sources' path. Format is: old_path:new_path")
+    cov_parser.add_argument("--lazy-line-cache", default=False, action="store_true", help="Disable line to address eager cache generation. For big programs, reduce memory usage, but process traces much slower")
     args = parser.parse_args()
 
     # Look for the libllvm-disas library in default location
@@ -361,7 +363,7 @@ def main():
                 break
 
         if args.llvm_disas_path is None:
-            raise Exception('Could not find ' + lib_name + ' in any of the following locations: ' + ', '.join([os.path.abspath(path) for path in lib_search_paths]))
+            raise FileNotFoundError('Could not find ' + lib_name + ' in any of the following locations: ' + ', '.join([os.path.abspath(path) for path in lib_search_paths]))
 
     try:
         filename, file_extension = os.path.splitext(args.file)
@@ -381,7 +383,7 @@ def main():
                         print("'--export-for-coverview' implies '--lcov-format'")
                         args.lcov_format = True
                     if not args.coverage_output:
-                        raise Exception("Specify a file with '--output' when packing an archive for Coverview")
+                        raise ValueError("Specify a file with '--output' when packing an archive for Coverview")
 
                 handle_coverage(args, trace_data)
             else:
@@ -390,8 +392,10 @@ def main():
     except BrokenPipeError:
         # Avoid crashing when piping the results e.g. to less
         sys.exit(0)
-    except InvalidFileFormatException as err:
-        sys.exit(f"Error: {err}")
+    except (ValueError, RuntimeError) as err:
+        sys.exit(f"Error during execution: {err}")
+    except (FileNotFoundError, InvalidFileFormatException) as err:
+        sys.exit(f"Error while loading file: {err}")
     except KeyboardInterrupt:
         sys.exit(1)
 
