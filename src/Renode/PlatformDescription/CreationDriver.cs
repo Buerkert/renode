@@ -17,6 +17,7 @@ using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Peripherals.Miscellaneous;
 using Antmicro.Renode.PlatformDescription.Syntax;
 using Antmicro.Renode.Utilities;
@@ -225,13 +226,13 @@ namespace Antmicro.Renode.PlatformDescription
 
         private List<Entry> SortEntriesForCreation(IEnumerable<Entry> entries)
         {
-            var graph = BuildDependencyGraph(entries, entryObjectsToSkip: typeof(Antmicro.Renode.PlatformDescription.Syntax.RegistrationInfo));
+            var graph = BuildDependencyGraph(entries, creationNotRegistration: true);
             return SortEntries(entries, graph, ParsingError.CreationOrderCycle);
         }
 
         private List<Entry> SortEntriesForRegistration(IEnumerable<Entry> entries)
         {
-            var graph = BuildDependencyGraph(entries, entryObjectsToSkip: typeof(Antmicro.Renode.PlatformDescription.Syntax.ConstructorOrPropertyAttribute));
+            var graph = BuildDependencyGraph(entries, creationNotRegistration: false);
             return SortEntries(entries, graph, ParsingError.RegistrationOrderCycle);
         }
 
@@ -295,24 +296,39 @@ namespace Antmicro.Renode.PlatformDescription
         // it is incidence dictionary, so that if a depends on b, then we have entry in the dictionary
         // for a and this is another dictionary in which there is an entry for b and the value of such entry
         // is a syntax element (ReferenceValue) that states such dependency
-        private DependencyGraph BuildDependencyGraph(IEnumerable<Entry> source, Type entryObjectsToSkip)
+        private DependencyGraph BuildDependencyGraph(IEnumerable<Entry> source, bool creationNotRegistration)
         {
             var result = new DependencyGraph();
             foreach(var from in source)
             {
                 var localDictionary = new Dictionary<Entry, ReferenceValue>();
                 result.Add(from, localDictionary);
-                SyntaxTreeHelpers.VisitSyntaxTree<ConstructorOrPropertyAttribute>(from, ctorAttribute =>
+                SyntaxTreeHelpers.VisitSyntaxTree<IVisitable>(from, ctorElement =>
                 {
-                    if(ctorAttribute.IsPropertyAttribute)
+                    ReferenceValue maybeReferenceValue;
+                    if(ctorElement is ConstructorOrPropertyAttribute ctorAttribute)
+                    {
+                        if(ctorAttribute.IsPropertyAttribute)
+                        {
+                            return;
+                        }
+                        maybeReferenceValue = ctorAttribute.Value as ReferenceValue;
+                    }
+                    else if(ctorElement is RegistrationInfo ctorRegistrationInfo)
+                    {
+                        maybeReferenceValue = ctorRegistrationInfo.Register;
+                    }
+                    else
                     {
                         return;
                     }
-                    var referenceValue = ctorAttribute.Value as ReferenceValue;
-                    if(referenceValue == null)
+
+                    if(maybeReferenceValue == null)
                     {
                         return;
                     }
+                    var referenceValue = maybeReferenceValue;
+
                     // it is easier to track dependency on variables than on entries (because there is connection refVal -> variable and entry -> variable)
                     var variable = variableStore.GetVariableFromReference(referenceValue);
                     if(variable.DeclarationPlace == DeclarationPlace.BuiltinOrAlreadyRegistered)
@@ -328,9 +344,13 @@ namespace Antmicro.Renode.PlatformDescription
                 }, (obj, isChildOfEntry) =>
                 {
                     var objAsPropertyOrAttribute = (obj as ConstructorOrPropertyAttribute);
-
                     var isNotProperty = (objAsPropertyOrAttribute == null) || !objAsPropertyOrAttribute.IsPropertyAttribute;
-                    var isNotOfSkippedType = !(isChildOfEntry && (obj.GetType() == entryObjectsToSkip));
+
+                    var skipType = creationNotRegistration
+                        ? obj is RegistrationInfo
+                        : obj is IrqAttribute || obj is ConstructorOrPropertyAttribute;
+                    var isNotOfSkippedType = !(isChildOfEntry && skipType);
+
                     return isNotProperty && isNotOfSkippedType;
                 });
             }
@@ -895,6 +915,33 @@ namespace Antmicro.Renode.PlatformDescription
             return true;
         }
 
+        private IReadOnlyDictionary<string, int> GetStateBits(string initiator)
+        {
+            if(!string.IsNullOrEmpty(initiator))
+            {
+                if(!variableStore.TryGetVariableInLocalScope(initiator, out var variable))
+                {
+                    throw new RecoverableException($"Invalid initiator: {initiator}");
+                }
+                return (variable.Value as IPeripheralWithTransactionState)?.StateBits;
+            }
+
+            var possibleInitiators = machine.GetPeripheralsOfType<IPeripheralWithTransactionState>();
+            if(!possibleInitiators.Any())
+            {
+                return null;
+            }
+
+            var theIntersectionOfTheirStateBitsets = possibleInitiators
+                .Select(i => i.StateBits)
+                .Aggregate((commonDict, nextDict) =>
+                    commonDict
+                        .Where(p => nextDict.TryGetValue(p.Key, out var value) && p.Value == value)
+                        .ToDictionary(p => p.Key, p => p.Value)
+                );
+            return theIntersectionOfTheirStateBitsets;
+        }
+
         private bool TryRegisterFromEntry(Entry entry)
         {
             if(!AreAllParentsRegistered(entry))
@@ -910,7 +957,7 @@ namespace Antmicro.Renode.PlatformDescription
                     return true;
                 }
                 var register = variableStore.GetVariableFromReference(registrationInfo.Register).Value;
-                IRegistrationPoint registrationPoint;
+                var registrationPoints = new List<IRegistrationPoint>();
                 if(registrationInfo.Constructor != null)
                 {
                     var constructorParameters = registrationInfo.Constructor.GetParameters();
@@ -929,7 +976,7 @@ namespace Antmicro.Renode.PlatformDescription
                     {
                         FillDefaultParameter(ref constructorParameterValues[i], constructorParameters[i]);
                     }
-                    registrationPoint = (IRegistrationPoint)registrationInfo.Constructor.Invoke(constructorParameterValues);
+                    registrationPoints.Add((IRegistrationPoint)registrationInfo.Constructor.Invoke(constructorParameterValues));
                 }
                 else
                 {
@@ -937,11 +984,42 @@ namespace Antmicro.Renode.PlatformDescription
                     var objectRegPoint = registrationInfo.RegistrationPoint as ObjectValue;
                     if(referenceRegPoint != null)
                     {
-                        registrationPoint = (IRegistrationPoint)variableStore.GetVariableFromReference(referenceRegPoint).Value;
+                        registrationPoints.Add((IRegistrationPoint)variableStore.GetVariableFromReference(referenceRegPoint).Value);
                     }
                     else if(objectRegPoint != null)
                     {
-                        registrationPoint = (IRegistrationPoint)CreateFromObjectValue(objectRegPoint);
+                        var registrationPoint = (IRegistrationPoint)CreateFromObjectValue(objectRegPoint);
+                        if(registrationPoint is IConditionalRegistration cr && cr.Condition != null && !machine.IgnorePeripheralRegistrationConditions)
+                        {
+                            // Split it into simple registration points (one condition per) for each initiator
+                            var condition = AccessConditionParser.ParseCondition(cr.Condition);
+                            var conditionPerInitiator = AccessConditionParser.EvaluateWithStateBits(condition, GetStateBits);
+                            foreach(var initiatorName in conditionPerInitiator.Keys)
+                            {
+                                IPeripheral initiator = null;
+                                // The empty string is used as a placeholder initiator name, the conditions grouped under it
+                                // should be global (that is have no initiator condition). The created conditional registrations
+                                // will have Initiator == null.
+                                if(!string.IsNullOrEmpty(initiatorName))
+                                {
+                                    initiator = variableStore.GetVariableInLocalScope(initiatorName).Value as IPeripheral;
+                                    if(initiator == null)
+                                    {
+                                        throw new RecoverableException($"Initiator '{initiatorName}' is not a peripheral");
+                                    }
+                                }
+                                foreach(var initiatorCond in conditionPerInitiator[initiatorName])
+                                {
+                                    registrationPoints.Add(cr.WithInitiatorAndStateMask(initiator, initiatorCond));
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // If IgnorePeripheralRegistrationConditions is set, the point is added as-is, without
+                            // transforming Condition into StateMask, so the condition is inert.
+                            registrationPoints.Add(registrationPoint);
+                        }
                         UpdatePropertiesAndInterruptsOnUpdateQueue();
                     }
                     else
@@ -951,12 +1029,15 @@ namespace Antmicro.Renode.PlatformDescription
                         {
                             HandleInternalError(registrationInfo.RegistrationPoint);
                         }
-                        registrationPoint = NullRegistrationPoint.Instance;
+                        registrationPoints.Add(NullRegistrationPoint.Instance);
                     }
                 }
                 try
                 {
-                    registrationInfo.RegistrationInterface.GetMethod("Register").Invoke(register, new[] { entry.Variable.Value, registrationPoint });
+                    foreach(var registrationPoint in registrationPoints)
+                    {
+                        registrationInfo.RegistrationInterface.GetMethod("Register").Invoke(register, new[] { entry.Variable.Value, registrationPoint });
+                    }
                 }
                 catch(TargetInvocationException exception)
                 {
