@@ -3,7 +3,8 @@
 set -u
 set -e
 
-export ROOT_PATH="$(cd $(dirname $0); echo $PWD)"
+ROOT_PATH="$(cd "$(dirname $0)"; echo $PWD)"
+export ROOT_PATH
 OUTPUT_DIRECTORY="$ROOT_PATH/output"
 EXPORT_DIRECTORY=""
 
@@ -57,7 +58,7 @@ function print_help() {
   echo "<ARGS>                            arguments to pass to the build system"
 }
 
-while getopts "cdvpnstb:o:B:F:a:-:" opt
+while getopts "cdvpnstb:o:B:F:-:" opt
 do
   case $opt in
     c)
@@ -109,8 +110,8 @@ do
           ;;
         "force-net-framework-version")
           shift $((OPTIND-1))
-          NET_FRAMEWORK_VER=p:TargetFrameworkVersion=v$1
-          PARAMS+=($NET_FRAMEWORK_VER)
+          NET_FRAMEWORK_VER="p:TargetFrameworkVersion=v$1"
+          PARAMS+=("$NET_FRAMEWORK_VER")
           OPTIND=2
           ;;
         "net")
@@ -140,7 +141,14 @@ do
           ;;
         "host-arch")
           shift $((OPTIND-1))
-          HOST_ARCH=$1
+          if [ $1 == "aarch64" ] || [ $1 == "arm64" ]; then
+            HOST_ARCH="aarch64"
+          elif [ $1 == "i386" ] || [ $1 == "x86" ] || [ $1 == "x86_64" ]; then
+            HOST_ARCH="i386"
+          else
+            echo "host architecture $1 not supported. Supported architectures are i386 and aarch64"
+            exit 1
+          fi
           OPTIND=2
           ;;
         "skip-dotnet-target-generation")
@@ -229,9 +237,23 @@ elif $ON_WINDOWS
 then
     BUILD_TARGET=Windows
     TFM="$TFM-windows10.0.17763.0"
-    RID="win-x64"
 else
     BUILD_TARGET=Mono
+fi
+
+# Set correct RID
+if $ON_LINUX; then
+    RID="linux-x64"
+    if [[ $HOST_ARCH == "aarch64" ]]; then
+        RID="linux-arm64"
+    fi
+elif $ON_OSX; then
+    RID="osx-x64"
+    if [[ $HOST_ARCH == "aarch64" ]]; then
+        RID="osx-arm64"
+    fi
+elif $ON_WINDOWS; then
+    RID="win-x64"
 fi
 
 if [[ $GENERATE_DOTNET_BUILD_TARGET = true ]]; then
@@ -350,7 +372,7 @@ pushd "$ROOT_PATH/tools/building" > /dev/null
 ./check_weak_implementations.sh
 popd > /dev/null
 
-PARAMS+=(p:Configuration=${CONFIGURATION}${BUILD_TARGET} p:GenerateFullPaths=true p:Platform="\"$BUILD_PLATFORM\"")
+PARAMS+=(p:Configuration="${CONFIGURATION}${BUILD_TARGET}" p:GenerateFullPaths=true p:Platform="\"$BUILD_PLATFORM\"")
 
 # Paths for tlib
 CORES_BUILD_PATH="$CORES_PATH/obj/$CONFIGURATION"
@@ -382,7 +404,7 @@ if [[ ! -z $TLIB_ARCH ]]; then
   NONE_MATCHED=true
   for potential_match in "${CORES[@]}"; do
     if [[ $potential_match == "$TLIB_ARCH"* ]]; then
-      CORES=($potential_match)
+      CORES=("$potential_match")
       echo "Compiling tlib for $potential_match"
       NONE_MATCHED=false
       break
@@ -410,13 +432,13 @@ do
     mkdir -p $CORE_DIR
     pushd "$CORE_DIR" > /dev/null
     if [[ $ENDIAN == "be" ]]; then
-        CMAKE_CONF_FLAGS+=" -DTARGET_BIG_ENDIAN=1"
+        CMAKE_CONF_FLAGS+=" -DTARGET_WORDS_BIGENDIAN=1"
     fi
     if [[ "$TLIB_EXPORT_COMPILE_COMMANDS" = true ]]; then
         CMAKE_CONF_FLAGS+=" -DCMAKE_EXPORT_COMPILE_COMMANDS=1"
     fi
     cmake "$CMAKE_GEN" $CMAKE_COMMON $CMAKE_CONF_FLAGS -DHOST_ARCH=$HOST_ARCH $CORES_PATH
-    cmake --build . -j$(nproc)
+    cmake --build . -j"$(nproc)"
     CORE_BIN_DIR=$CORES_BIN_PATH/lib
     mkdir -p $CORE_BIN_DIR
     if $ON_OSX; then
@@ -502,8 +524,9 @@ then
             exit 1
         elif $ON_OSX
         then
-            echo "dotnet packages not supported on ${DETECTED_OS}"
-            exit 1
+            eval "dotnet publish -maxcpucount:1 -f $TFM --self-contained false $(build_args_helper "${PARAMS[@]}") $TARGET"
+            export RID TFM
+            $ROOT_PATH/tools/packaging/make_osx_dotnet_package.sh $params
         fi
     else
         $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_packages.sh $params
@@ -516,6 +539,7 @@ then
     if $NET
     then
         # maxcpucount:1 to avoid an error with multithreaded publish
+	echo "RID = $RID"
         eval "dotnet publish -maxcpucount:1 -r $RID -f $TFM --self-contained true $(build_args_helper "${PARAMS[@]}") $TARGET"
         export RID TFM
         $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_portable_dotnet.sh $params

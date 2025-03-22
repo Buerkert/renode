@@ -40,6 +40,13 @@ usart1: UART.SAM_USART @ sysbus 0x40028000
     enablePdc: true
     ->nvic@15
 
+adc: Analog.SAM4S_ADC @ sysbus 0x40038000
+    baseFrequency: 120000000
+    ->nvic@29
+
+dacc: Miscellaneous.SAM4S_DACC @ sysbus 0x4003C000
+    ->nvic@30
+
 PMC_SR: Python.PythonPeripheral @ sysbus 0x400E0468
     size: 0x4
     initable: true
@@ -54,6 +61,12 @@ uart1: UART.SAM_USART @ sysbus 0x400E0800
     uartOnlyMode: true
     enablePdc: true
     ->nvic@9
+
+rstc: Miscellaneous.SAM4S_RSTC @ sysbus 0x400E1400
+
+wdt: Timers.SAM4S_WDT @ sysbus 0x400E1450
+    resetController: rstc
+    ->nvic@4
 
 peripheral_bb: Miscellaneous.BitBanding @ sysbus <0x42000000, 0x43FFFFFF>
     peripheralBase: 0x40000000

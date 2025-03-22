@@ -6,6 +6,7 @@ import signal
 import psutil
 import subprocess
 from time import monotonic
+from typing import Dict, List
 
 import xml.etree.ElementTree as ET
 import glob
@@ -162,6 +163,12 @@ class NUnitTestSuite(object):
 
 
     def should_retry_suite(self, options, iteration_index, suite_retry_index):
+        # Unused mechanism, this exists to keep a uniform interface with
+        # robot_tests_provider.py.
+        return False
+
+
+    def tests_failed_due_to_renode_crash(self) -> bool:
         # Unused mechanism, this exists to keep a uniform interface with
         # robot_tests_provider.py.
         return False

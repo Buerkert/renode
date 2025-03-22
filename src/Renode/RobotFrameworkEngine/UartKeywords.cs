@@ -1,13 +1,16 @@
 //
-// Copyright (c) 2010-2024 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+using System.Linq;
+using System.Text;
 using Antmicro.Renode.Peripherals.UART;
 using Antmicro.Renode.Testing;
 using Antmicro.Renode.Time;
+using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.RobotFramework
 {
@@ -42,7 +45,8 @@ namespace Antmicro.Renode.RobotFramework
         }
 
         [RobotFrameworkKeyword(replayMode: Replay.Always)]
-        public int CreateTerminalTester(string uart, float? timeout = null, string machine = null, string endLineOption = null, bool? defaultPauseEmulation = null, bool? defaultMatchNextLine = null)
+        public int CreateTerminalTester(string uart, float? timeout = null, string machine = null, string endLineOption = null,
+            bool? defaultPauseEmulation = null, bool? defaultMatchNextLine = null, bool binaryMode = false)
         {
             this.defaultPauseEmulation = defaultPauseEmulation.GetValueOrDefault();
             this.defaultMatchNextLine = defaultMatchNextLine.GetValueOrDefault();
@@ -54,11 +58,11 @@ namespace Antmicro.Renode.RobotFramework
                 TerminalTester tester;
                 if(Enum.TryParse<EndLineOption>(endLineOption, out var result))
                 {
-                    tester = new TerminalTester(TimeInterval.FromSeconds(timeoutInSeconds), result);
+                    tester = new TerminalTester(TimeInterval.FromSeconds(timeoutInSeconds), result, binaryMode: binaryMode);
                 }
                 else
                 {
-                    tester = new TerminalTester(TimeInterval.FromSeconds(timeoutInSeconds));
+                    tester = new TerminalTester(TimeInterval.FromSeconds(timeoutInSeconds), binaryMode: binaryMode);
                 }
                 tester.AttachTo(uartObject);
                 return tester;
@@ -76,40 +80,35 @@ namespace Antmicro.Renode.RobotFramework
         public TerminalTesterResult WaitForLineOnUart(string content, float? timeout = null, int? testerId = null, bool treatAsRegex = false,
             bool includeUnfinishedLine = false, bool? pauseEmulation = null, bool? matchNextLine = null)
         {
-            TimeInterval? timeInterval = null;
-            if(timeout.HasValue)
+            return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                timeInterval = TimeInterval.FromSeconds(timeout.Value);
-            }
-
-            var tester = GetTesterOrThrowException(testerId);
-            var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
+                return tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
                 pauseEmulation ?? defaultPauseEmulation, matchNextLine ?? defaultMatchNextLine);
-            if(result == null)
-            {
-                OperationFail(tester);
-            }
-            return result;
+            });
         }
 
         [RobotFrameworkKeyword]
         public TerminalTesterResult WaitForLinesOnUart(string[] content, float? timeout = null, int? testerId = null, bool treatAsRegex = false,
             bool includeUnfinishedLine = false, bool? pauseEmulation = null, bool? matchFromNextLine = null)
         {
-            TimeInterval? timeInterval = null;
-            if(timeout.HasValue)
+            return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                timeInterval = TimeInterval.FromSeconds(timeout.Value);
-            }
+                return tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
+                    pauseEmulation ?? defaultPauseEmulation, matchFromNextLine ?? defaultMatchNextLine);
+            });
+        }
 
-            var tester = GetTesterOrThrowException(testerId);
-            var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
-                pauseEmulation ?? defaultPauseEmulation, matchFromNextLine ?? defaultMatchNextLine);
-            if(result == null)
+        [RobotFrameworkKeyword]
+        public BinaryTerminalTesterResult WaitForBytesOnUart(string content, float? timeout = null, int? testerId = null, bool treatAsRegex = false,
+            bool? pauseEmulation = null, bool? matchStart = false)
+        {
+            return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                OperationFail(tester);
-            }
-            return result;
+                var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine: true,
+                    pauseEmulation ?? defaultPauseEmulation, matchStart ?? defaultMatchNextLine);
+
+                return result != null ? new BinaryTerminalTesterResult(result) : null;
+            }, expectBinaryModeTester: true);
         }
 
         [RobotFrameworkKeyword]
@@ -133,19 +132,10 @@ namespace Antmicro.Renode.RobotFramework
         [RobotFrameworkKeyword]
         public TerminalTesterResult WaitForNextLineOnUart(float? timeout = null, int? testerId = null, bool? pauseEmulation = null)
         {
-            TimeInterval? timeInterval = null;
-            if(timeout.HasValue)
+            return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                timeInterval = TimeInterval.FromSeconds(timeout.Value);
-            }
-
-            var tester = GetTesterOrThrowException(testerId);
-            var result = tester.NextLine(timeInterval, pauseEmulation ?? defaultPauseEmulation);
-            if(result == null)
-            {
-                OperationFail(tester);
-            }
-            return result;
+                return tester.NextLine(timeInterval, pauseEmulation ?? defaultPauseEmulation);
+            });
         }
 
         [RobotFrameworkKeyword]
@@ -198,6 +188,31 @@ namespace Antmicro.Renode.RobotFramework
             tester.WriteCharDelay = TimeSpan.FromSeconds(delay);
         }
 
+        private T DoTest<T>(float? timeout, int? testerId, Func<TerminalTester, TimeInterval?, T> test, bool expectBinaryModeTester = false)
+        {
+            TimeInterval? timeInterval = null;
+            if(timeout.HasValue)
+            {
+                timeInterval = TimeInterval.FromSeconds(timeout.Value);
+            }
+
+            var tester = GetTesterOrThrowException(testerId);
+            if(tester.BinaryMode != expectBinaryModeTester)
+            {
+                var waitedThing = expectBinaryModeTester ? "bytes" : "text";
+                var testerMode = tester.BinaryMode ? "binary" : "text";
+                throw new InvalidOperationException($"Attempt to wait for {waitedThing} on a tester configured in {testerMode} mode. " +
+                        $"Please set binaryMode={!tester.BinaryMode} when creating the tester.");
+            }
+
+            var result = test(tester, timeInterval);
+            if(result == null)
+            {
+                OperationFail(tester);
+            }
+            return result;
+        }
+
         private void OperationFail(TerminalTester tester)
         {
             throw new InvalidOperationException($"Terminal tester failed!\n\nFull report:\n{tester.GetReport()}");
@@ -206,5 +221,34 @@ namespace Antmicro.Renode.RobotFramework
         private bool defaultPauseEmulation;
         private bool defaultMatchNextLine;
         private float globalTimeout = 8;
+
+        // The 'binary strings' used internally are not safe to pass through XML-RPC, probably due to special character escaping
+        // issues. See https://github.com/antmicro/renode/commit/7739c14c6275058e71da30997c8e0f80144ed81c 
+        // and Misc.StripNonSafeCharacters. Here we represent the results as byte[] which get represented as base64 in the
+        // XML-RPC body and <class 'bytes'> in the Python client.
+        public class BinaryTerminalTesterResult
+        {
+            public BinaryTerminalTesterResult(TerminalTesterResult result)
+            {
+                this.content = Encode(result.line) ?? Array.Empty<byte>();
+                this.timestamp = timestamp;
+                this.groups = result.groups.Select(Encode).ToArray();
+            }
+
+            public byte[] content { get; }
+            public double timestamp { get; }
+            public byte[][] groups { get; }
+
+            private byte[] Encode(string str)
+            {
+                if(str == null)
+                {
+                    return null;
+                }
+                // Encode using the Latin1 encoding, which maps each character directly to its
+                // corresponding byte value (that is, "\x00\x80\xff" becomes { 0x00, 0x80, 0xff }).
+                return Encoding.GetEncoding("iso-8859-1").GetBytes(str);
+            }
+        }
     }
 }
