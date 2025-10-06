@@ -1,20 +1,19 @@
 //
-// Copyright (c) 2010-2024 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
-//  This file is licensed under the MIT License.
-//  Full license text is available in 'licenses/MIT.txt'.
+// This file is licensed under the MIT License.
+// Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
-using System.Linq;
-using System.Reflection;
 using System.Collections.Generic;
-using System.Runtime.ExceptionServices;
-using ELFSharp.ELF;
-using Antmicro.Renode.Logging;
-using Antmicro.Renode.Utilities;
+using System.Linq;
+
 using Antmicro.Renode.Exceptions;
+using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.CPU;
-using Antmicro.Renode.Peripherals.CPU.Registers;
+
+using ELFSharp.ELF;
+
 using Machine = Antmicro.Renode.Core.Machine;
 
 namespace Antmicro.Renode.Peripherals.CoSimulated
@@ -22,17 +21,10 @@ namespace Antmicro.Renode.Peripherals.CoSimulated
     public partial class CoSimulatedRiscV32 : CoSimulatedCPU, ICpuSupportingGdb
     {
         public CoSimulatedRiscV32(string cpuType, Machine machine, Endianess endianness = Endianess.LittleEndian,
-        CpuBitness bitness = CpuBitness.Bits32, string simulationFilePathLinux = null,
-        string simulationFilePathWindows = null, string simulationFilePathMacOS = null, string address = null)
-            : base(cpuType, machine, endianness, bitness, simulationFilePathLinux, simulationFilePathWindows, simulationFilePathMacOS, address)
+        CpuBitness bitness = CpuBitness.Bits32, string address = null)
+            : base(cpuType, machine, endianness, bitness, address)
         {
         }
-
-        public override string Architecture { get { return "riscv"; } }
-
-        public string GDBArchitecture { get { return "riscv:rv32"; } }
-
-        public List<GDBFeatureDescriptor> GDBFeatures { get { return new List<GDBFeatureDescriptor>(); } }
 
         public void SetRegister(int register, RegisterValue value)
         {
@@ -118,5 +110,11 @@ namespace Antmicro.Renode.Peripherals.CoSimulated
         {
             this.Log(LogLevel.Warning, "RemoveAllHooks not implemented");
         }
+
+        public override string Architecture { get { return "riscv"; } }
+
+        public string GDBArchitecture { get { return "riscv:rv32"; } }
+
+        public List<GDBFeatureDescriptor> GDBFeatures { get { return new List<GDBFeatureDescriptor>(); } }
     }
 }

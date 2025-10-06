@@ -31,7 +31,8 @@ class IncludeLoader(yaml.SafeLoader):
                 if isinstance(val, str):
                     lst[idx] = os.path.join(prefix, lst[idx])
                 elif isinstance(val, dict):
-                    _append_prefix(val.values()[0], prefix)
+                    v = next(iter(val.values()))
+                    _append_prefix(v, prefix)
                 else:
                     raise Exception('Unsupported list element: ' + val)
 
@@ -315,7 +316,7 @@ def configure_output(options):
 
 def run_test_group(args):
 
-    group, options, test_id = args
+    group, options = args
 
     iteration_counter = 0
     group_failed = False
@@ -350,7 +351,6 @@ def run_test_group(args):
                     # in each suite runner because this function will be called in a multiprocessing
                     # context when using the --jobs argument, as mentioned above
                     ok, suite_log_files = suite.run(options,
-                                                    run_id=test_id if options.jobs != 1 else 0,
                                                     iteration_index=iteration_counter,
                                                     suite_retry_index=retry_suites_counter - 1)
                     log_files.update((type(suite), log_file) for log_file in suite_log_files)
@@ -483,15 +483,9 @@ def run():
 
     print("Preparing suites")
 
-    test_id = 0
     args = []
     for group in options.tests.values():
-        args.append((group, options, test_id))
-        test_id += 1
-
-    for group in options.tests:
-        for suite in options.tests[group]:
-            suite.check(options, number_of_runs=test_id if options.jobs != 1 else 1)
+        args.append((group, options))
 
     for group in options.tests:
         for suite in options.tests[group]:

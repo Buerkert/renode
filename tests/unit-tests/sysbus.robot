@@ -401,6 +401,7 @@ Locked MappedMemory Should Not Be Accessible From CPU
 Partial MappedMemory Locking Should Not Be Allowed With ICPUWithMappedMemory
     # CPU is important; partial MappedMemory locking isn't allowed only with ICPUWithMappedMemory.
     Create Machine With CPU And Two MappedMemory Peripherals
+    Create Log Tester             0
 
     ${mem1_size}  ${mem1_addr}  ${mem1_range}=  Get mem1 Size, Address And Range
     ${mem2_size}  ${mem2_addr}  ${mem2_range}=  Get mem2 Size, Address And Range
@@ -470,7 +471,7 @@ Symbols Should Be Dynamically Loaded and Unloaded On Request
     Execute Command                sysbus LoadELF ${bin}
     ${main_address_global}=        Execute Command  sysbus GetSymbolAddress ${main_symbol_name}
     Should Be Equal As Numbers     ${main_symbol_address}  ${main_address_global}
-    
+
     # Symbol lookup fallbacks to the global scope if the per-cpu lookup is not found
     ${main_address_local}=         Execute Command  sysbus GetSymbolAddress ${main_symbol_name} context=${cpu}
     Should Be Equal As Numbers     ${main_symbol_address}  ${main_address_local}
@@ -486,7 +487,7 @@ Symbols Should Be Dynamically Loaded and Unloaded On Request
     ...                            Execute Command   sysbus GetSymbolAddress ${main_symbol_name} context=${cpu}
     Run Keyword And Expect Error   *Could not find any address for symbol: main*
     ...                            Execute Command   sysbus GetSymbolAddress ${main_symbol_name}
-    
+
     # Load symbols in the local scope so they are visible only for the given cpu
     Execute Command                sysbus LoadSymbolsFrom ${bin} context=${cpu}
     ${main_address_local}=         Execute Command  sysbus GetSymbolAddress ${main_symbol_name} context=${cpu}
@@ -495,7 +496,7 @@ Symbols Should Be Dynamically Loaded and Unloaded On Request
     ...                            Execute Command   sysbus GetSymbolAddress ${main_symbol_name}
 
 Should Log All Peripherals Accesses Only When Enabled
-    ${log}=                        Set Variable   peripheral: ReadByte from 0x0 (unknown), returned 0x0.
+    ${log}=                        Set Variable   peripheral: ReadByte from 0x0 (unknown), returned 0x0
     Create Log Tester              0
     Execute Command                mach create
     Execute Command                machine LoadPlatformDescriptionFromString "peripheral: Mocks.MockBytePeripheralWithoutTranslations @ sysbus <0x0, +0x8>"
@@ -518,3 +519,36 @@ Should Not Register Region When Only Read Method Is Implemented
     Run Keyword And Expect Error   *WriteDoubleWord is not specified for region*
     ...                            Execute Command   machine LoadPlatformDescriptionFromString ${platform_only_region_read}
 
+Should Not Dispose Registered Peripheral When Exception Thrown During Registration
+    Execute Command                mach create
+    Run Keyword And Expect Error   *Could not register*
+    ...                            Execute Command  machine LoadPlatformDescription "${CURDIR}${/}registration-disposal.repl"
+
+    Execute Command                allowPrivates true
+    ${x}=                          Execute Command  sram1 disposed
+    Should Be Equal                ${x}  False  strip_spaces=True
+
+Should Not Leave References To Unregistered CPU When Exception Thrown During Another Peripheral's Registration
+    Execute Command                mach create
+    Run Keyword And Expect Error   *Could not register*
+    ...                            Execute Command  machine LoadPlatformDescription "${CURDIR}${/}registration-disposal.repl"
+
+    # see if there are any stale references to cpu0 by attempting to save, which will cause a crash if there are
+    ${x}=                          Allocate Temporary File
+    Execute Command                Save @${x}
+
+Should Not Leave References To Unregistered CPU When Exception Thrown During Its Registration
+    Execute Command                mach create
+    Run Keyword And Expect Error   *Could not register*
+    ...                            Execute Command  machine LoadPlatformDescription "${CURDIR}${/}registration-disposal-cpuexn.repl"
+
+    # will cause a crash if there are stale references
+    Execute Command                Clear
+
+Should Not Leave References To A Peripheral That Obtained The System Bus In Its Constructor If This Peripheral Fails Registration
+    Execute Command                mach create
+    Run Keyword And Expect Error   *Cannot register peripheral*
+    ...                            Execute Command  machine LoadPlatformDescription "${CURDIR}${/}registration-disposal-noregister.repl"
+
+    ${x}=                          Allocate Temporary File
+    Execute Command                Save @${x}

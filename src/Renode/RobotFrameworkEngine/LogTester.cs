@@ -5,14 +5,14 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
-using System.Linq;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading;
+using System.Linq;
 using System.Text.RegularExpressions;
-using Antmicro.Renode.Logging;
-using Antmicro.Renode.Testing;
+using System.Threading;
+
 using Antmicro.Renode.Core;
+using Antmicro.Renode.Exceptions;
+using Antmicro.Renode.Logging;
 using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.RobotFramework
@@ -30,6 +30,7 @@ namespace Antmicro.Renode.RobotFramework
             this.defaultTimeout = virtualSecondsTimeout;
             messages = new List<LogEntry>();
             predicateEvent = new AutoResetEvent(false);
+            failingStrings = new List<FailingString>();
         }
 
         public override void Dispose()
@@ -57,7 +58,7 @@ namespace Antmicro.Renode.RobotFramework
                     return;
                 }
 
-                if(!predicate(entry))
+                if(!MatchFailingStrings(entry) && !predicate(entry))
                 {
                     // not found anything interesting
                     return;
@@ -87,7 +88,7 @@ namespace Antmicro.Renode.RobotFramework
             }
         }
 
-        public string WaitForEntry(string pattern, out IEnumerable<string> bufferedMessages, float? timeout = null, bool keep = false, bool treatAsRegex = false,
+        public string WaitForEntry(string pattern, out IEnumerable<string> bufferedMessages, out bool isFailingString, float? timeout = null, bool keep = false, bool treatAsRegex = false,
             bool pauseEmulation = false, LogLevel level = null)
         {
             var emulation = EmulationManager.Instance.CurrentEmulation;
@@ -102,7 +103,7 @@ namespace Antmicro.Renode.RobotFramework
 
             lock(messages)
             {
-                var entry = FlushAndCheckLocked(emulation, predicate, keep, out bufferedMessages);
+                var entry = FlushAndCheckLocked(emulation, predicate, keep, out bufferedMessages, out isFailingString);
                 if(entry != null || (effectiveTimeout == 0))
                 {
                     return entry;
@@ -140,7 +141,7 @@ namespace Antmicro.Renode.RobotFramework
             }
 
             // let's check for the last time and lock any incoming messages
-            return FlushAndCheckLocked(emulation, predicate, keep, out bufferedMessages);
+            return FlushAndCheckLocked(emulation, predicate, keep, out bufferedMessages, out isFailingString);
         }
 
         public void ClearHistory()
@@ -151,12 +152,34 @@ namespace Antmicro.Renode.RobotFramework
             }
         }
 
-        private string FlushAndCheckLocked(Emulation emulation, Predicate<LogEntry> predicate, bool keep, out IEnumerable<string> bufferedMessages)
+        public void RegisterFailingString(string pattern, bool treatAsRegex)
+        {
+            failingStrings.Add(new FailingString(pattern, treatAsRegex));
+        }
+
+        public void UnregisterFailingString(string pattern, bool treatAsRegex)
+        {
+            if(!failingStrings.Remove(new FailingString(pattern, treatAsRegex)))
+            {
+                throw new RecoverableException("Unable to unregister failing string, entry not found");
+            }
+        }
+
+        private string FlushAndCheckLocked(Emulation emulation, Predicate<LogEntry> predicate, bool keep, out IEnumerable<string> bufferedMessages, out bool isFailingString)
         {
             emulation.CurrentLogger.Flush();
+            isFailingString = false;
             lock(messages)
             {
-                if(TryFind(predicate, keep, out var result))
+                LogEntry result;
+                if(TryFind(MatchFailingStrings, keep, out result))
+                {
+                    bufferedMessages = null;
+                    isFailingString = true;
+                    return result.FullMessage;
+                }
+
+                if(TryFind(predicate, keep, out result))
                 {
                     bufferedMessages = null;
                     return result.FullMessage;
@@ -187,11 +210,37 @@ namespace Antmicro.Renode.RobotFramework
             return false;
         }
 
+        private bool MatchFailingStrings(LogEntry entry)
+        {
+            return failingStrings.Any(failingString =>
+            {
+                if(failingString.TreatAsRegex)
+                {
+                    var regex = new Regex(failingString.Pattern);
+                    return regex.IsMatch(entry.FullMessage);
+                }
+                return entry.FullMessage.Contains(failingString.Pattern);
+            });
+        }
+
         private bool pauseEmulation;
         private Predicate<LogEntry> predicate;
 
         private readonly AutoResetEvent predicateEvent;
         private readonly List<LogEntry> messages;
         private readonly float defaultTimeout;
+        private readonly List<FailingString> failingStrings;
+
+        private struct FailingString
+        {
+            public string Pattern;
+            public bool TreatAsRegex;
+
+            public FailingString(string pattern, bool treatAsRegex)
+            {
+                this.Pattern = pattern;
+                this.TreatAsRegex = treatAsRegex;
+            }
+        }
     }
 }

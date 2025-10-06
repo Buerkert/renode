@@ -5,15 +5,16 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
+
 using Antmicro.Renode.Core;
+using Antmicro.Renode.Exceptions;
+using Antmicro.Renode.Logging;
 using Antmicro.Renode.UserInterface;
 using Antmicro.Renode.Utilities;
-using Antmicro.Renode.Logging;
-using Antmicro.Renode.Exceptions;
-using System.Runtime.ExceptionServices;
 
 namespace Antmicro.Renode.RobotFramework
 {
@@ -41,6 +42,11 @@ namespace Antmicro.Renode.RobotFramework
         {
             EmulationManager.Instance.Clear();
             Recorder.Instance.ClearEvents();
+            if(logTester != null)
+            {
+                Logger.RemoveBackend(logTester);
+                logTester = null;
+            }
         }
 
         [RobotFrameworkKeyword(replayMode: Replay.Always)]
@@ -128,36 +134,36 @@ namespace Antmicro.Renode.RobotFramework
             var isStarted = EmulationManager.Instance.CurrentEmulation.IsStarted;
             switch(action)
             {
-                case HotSpotAction.None:
-                    // do nothing
-                    break;
-                case HotSpotAction.Pause:
-                    if(isStarted)
-                    {
-                        EmulationManager.Instance.CurrentEmulation.PauseAll();
-                        EmulationManager.Instance.CurrentEmulation.StartAll();
-                    }
-                    break;
-                case HotSpotAction.Serialize:
-                    var fileName = TemporaryFilesManager.Instance.GetTemporaryFile();
-                    var monitor = ObjectCreator.Instance.GetSurrogate<Monitor>();
-                    if(monitor.Machine != null)
-                    {
-                        EmulationManager.Instance.CurrentEmulation.AddOrUpdateInBag("monitor_machine", monitor.Machine);
-                    }
-                    EmulationManager.Instance.Save(fileName);
-                    EmulationManager.Instance.Load(fileName);
-                    if(EmulationManager.Instance.CurrentEmulation.TryGetFromBag<Machine>("monitor_machine", out var mac))
-                    {
-                        monitor.Machine = mac;
-                    }
-                    if(isStarted)
-                    {
-                        EmulationManager.Instance.CurrentEmulation.StartAll();
-                    }
-                    break;
-                default:
-                    throw new KeywordException("Hot spot action {0} is not currently supported", action);
+            case HotSpotAction.None:
+                // do nothing
+                break;
+            case HotSpotAction.Pause:
+                if(isStarted)
+                {
+                    EmulationManager.Instance.CurrentEmulation.PauseAll();
+                    EmulationManager.Instance.CurrentEmulation.StartAll();
+                }
+                break;
+            case HotSpotAction.Serialize:
+                var fileName = TemporaryFilesManager.Instance.GetTemporaryFile();
+                var monitor = ObjectCreator.Instance.GetSurrogate<Monitor>();
+                if(monitor.Machine != null)
+                {
+                    EmulationManager.Instance.CurrentEmulation.AddOrUpdateInBag("monitor_machine", monitor.Machine);
+                }
+                EmulationManager.Instance.Save(fileName);
+                EmulationManager.Instance.Load(fileName);
+                if(EmulationManager.Instance.CurrentEmulation.TryGetFromBag<Machine>("monitor_machine", out var mac))
+                {
+                    monitor.Machine = mac;
+                }
+                if(isStarted)
+                {
+                    EmulationManager.Instance.CurrentEmulation.StartAll();
+                }
+                break;
+            default:
+                throw new KeywordException("Hot spot action {0} is not currently supported", action);
             }
         }
 
@@ -191,7 +197,7 @@ namespace Antmicro.Renode.RobotFramework
             if(isSerialized)
             {
                 EmulationManager.Instance.Load(savepoint.Filename);
-                if(savepoint.SelectedMachine!= null)
+                if(savepoint.SelectedMachine != null)
                 {
                     ExecuteCommand($"mach set \"{savepoint.SelectedMachine}\"");
                 }
@@ -224,7 +230,7 @@ namespace Antmicro.Renode.RobotFramework
             try
             {
                 masterTimeSource.BlockHook += callback;
-                System.Threading.WaitHandle.WaitAny(new [] { timeoutEvent.WaitHandle, mre });
+                System.Threading.WaitHandle.WaitAny(new[] { timeoutEvent.WaitHandle, mre });
 
                 if(timeoutEvent.IsTriggered)
                 {
@@ -304,6 +310,22 @@ namespace Antmicro.Renode.RobotFramework
             return result;
         }
 
+        [RobotFrameworkKeyword]
+        public void RegisterFailingLogString(string pattern, bool treatAsRegex = false)
+        {
+            CheckLogTester();
+
+            logTester.RegisterFailingString(pattern, treatAsRegex);
+        }
+
+        [RobotFrameworkKeyword]
+        public void UnregisterFailingLogString(string pattern, bool treatAsRegex = false)
+        {
+            CheckLogTester();
+
+            logTester.UnregisterFailingString(pattern, treatAsRegex);
+        }
+
         [RobotFrameworkKeyword(replayMode: Replay.Always)]
         public void CreateLogTester(float timeout, bool? defaultPauseEmulation = null)
         {
@@ -318,16 +340,20 @@ namespace Antmicro.Renode.RobotFramework
         {
             CheckLogTester();
 
-            var result = logTester.WaitForEntry(pattern, out var bufferedMessages, timeout, keep, treatAsRegex, pauseEmulation ?? defaultPauseEmulation, level);
+            var result = logTester.WaitForEntry(pattern, out var bufferedMessages, out var isFailingString, timeout, keep, treatAsRegex, pauseEmulation ?? defaultPauseEmulation, level);
             if(result == null)
             {
-                // We must limit the length of the resulting string to Int32.MaxValue to avoid OutOfMemoryException. 
+                // We must limit the length of the resulting string to Int32.MaxValue to avoid OutOfMemoryException.
                 // We could do it accurately, but it doesn't seem worth here, because the goal is just to provide some extra context to the exception message.
                 // We arbitrarily chose the number of messages to include here. In theory it could still throw during string.Join operation given very long messages,
                 // but it's unlikely to happen given the value of Int32.MaxValue = 2,147,483,647.
                 var logContextMessages = bufferedMessages.TakeLast(MaxLogContextPrintedOnException);
                 var logMessages = string.Join("\n ", logContextMessages);
                 throw new KeywordException($"Expected pattern \"{pattern}\" did not appear in the log\nLast {logContextMessages.Count()} buffered log messages are: \n {logMessages}");
+            }
+            if(isFailingString)
+            {
+                throw new InvalidOperationException($"Log tester failed!\n\nTest failing entry has been found in log:\n{result}");
             }
             return result;
         }
@@ -339,7 +365,7 @@ namespace Antmicro.Renode.RobotFramework
 
             // Passing `level` as a named argument causes a compiler crash in Mono 6.8.0.105+dfsg-3.4
             // from Debian
-            var result = logTester.WaitForEntry(pattern, out var _, timeout, true, treatAsRegex, pauseEmulation ?? defaultPauseEmulation, level);
+            var result = logTester.WaitForEntry(pattern, out var _, out var __, timeout, true, treatAsRegex, pauseEmulation ?? defaultPauseEmulation, level);
             if(result != null)
             {
                 throw new KeywordException($"Unexpected line detected in the log: {result}");
@@ -427,16 +453,22 @@ namespace Antmicro.Renode.RobotFramework
             }
         }
 
-        private readonly Dictionary<string, Savepoint> savepoints;
-
         private LogTester logTester;
         private string cachedLogFilePath;
         private bool defaultPauseEmulation;
+
+        private readonly Dictionary<string, Savepoint> savepoints;
 
         private readonly Monitor monitor;
 
         private const string CachedLogBackendName = "cache";
         private const int MaxLogContextPrintedOnException = 1000;
+
+        public enum ProviderType
+        {
+            Serialization = 0,
+            Reexecution = 1,
+        }
 
         private struct Savepoint
         {
@@ -447,14 +479,8 @@ namespace Antmicro.Renode.RobotFramework
             }
 
             public string SelectedMachine { get; }
-            public string Filename { get; }
-        }
 
-        public enum ProviderType
-        {
-            Serialization = 0,
-            Reexecution = 1,
+            public string Filename { get; }
         }
     }
 }
-

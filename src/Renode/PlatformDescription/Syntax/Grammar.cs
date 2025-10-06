@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2023 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+
 using Sprache;
 
 // all elements of parse tree has to be located in this namespace
@@ -50,7 +51,7 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
         //not set as a token, as it may be used inside strings where we want to preserve spaces
         public static readonly Parser<char> QuotationMark = Parse.Char('"');
 
-        public static readonly Parser<string> MultiQuotationMark = Parse.String("'''").Text(); 
+        public static readonly Parser<string> MultiQuotationMark = Parse.String("'''").Text();
 
         public static readonly Parser<char> EscapeCharacter = Parse.Char('\\');
 
@@ -112,6 +113,8 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
 
         public static readonly Parser<string> InitKeyword = MakeKeyword("init");
 
+        public static readonly Parser<string> ResetKeyword = MakeKeyword("reset");
+
         public static readonly Parser<string> LocalKeyword = MakeKeyword("local");
 
         public static readonly Parser<string> PrefixedKeyword = MakeKeyword("prefixed");
@@ -140,7 +143,7 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
              from content in QuotedStringElement.Many().Text()
              from closingQuote in QuotationMark
              select content).Token().Named("quoted string");
-       
+
         public static readonly Parser<string> MultilineQuotedString =
             (from openingQuote in MultiQuotationMark
              from content in MultiQuotedStringElement.Many().Select(x => string.Join(String.Empty, x))
@@ -183,10 +186,25 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
         public static readonly Parser<BoolValue> BoolValue =
             TrueKeyword.Or(FalseKeyword).Select(x => new BoolValue(x)).Named("bool");
 
+        public static readonly Parser<ListValue> EmptyList =
+            (from opening in OpeningSquareBracket
+             from closing in ClosingSquareBracket
+             select new ListValue(Enumerable.Empty<Value>()));
+
+        public static readonly Parser<ListValue> NonEmptyList =
+            (from opening in OpeningSquareBracket
+             from values in Value.DelimitedBy(Comma)
+             from trailing in Comma.Optional()
+             from closing in ClosingSquareBracket
+             select new ListValue(values));
+
+        public static readonly Parser<ListValue> ListValue = NonEmptyList.Or(EmptyList);
+
         public static readonly Parser<Value> Value = (SingleLineQuotedString.Or(MultilineQuotedString)).Select(x => new StringValue(x))
                                                                  .XOr<Value>(Range)
                                                                  .XOr(Number.Select(x => new NumericalValue(x)))
                                                                  .XOr(ObjectValue)
+                                                                 .XOr(ListValue)
                                                                  .Or(Enum)
                                                                  .Or(BoolValue)
                                                                  .Or(ReferenceValue)
@@ -217,7 +235,7 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
              from colon in Colon
              from value in Value.Named("constructor or property value").Or(NoneKeyword).Or(EmptyKeyword)
              select new ConstructorOrPropertyAttribute(identifier, value)).Named("constructor or property name and value");
- 
+
         public static readonly Parser<string> QuotedMonitorStatementElement =
             (from openingQuote in QuotationMark
              from content in QuotedStringElement.Many().Text()
@@ -231,7 +249,7 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
             (from elements in MonitorStatementElement.Many()
              select elements.Aggregate((x, y) => x + y)).Token().Named("monitor statement");
 
-        public static readonly Parser<IEnumerable<string>> InitValue =
+        public static readonly Parser<IEnumerable<string>> MonitorStatements =
             (from openingBrace in OpeningBrace.Named("init statement list")
              from firstLine in MonitorStatement
              from rest in Separator.Then(x => MonitorStatement).XMany()
@@ -242,14 +260,62 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
             (from initKeyword in InitKeyword
              from addSuffix in Identifier.Where(x => x == "add").Optional()
              from colon in Colon
-             from initValue in InitValue
+             from initValue in MonitorStatements
              select new InitAttribute(initValue, !addSuffix.IsEmpty)).Named("init section");
+
+        public static readonly Parser<ResetAttribute> ResetAttribute =
+            (from resetKeyword in ResetKeyword
+             from addSuffix in Identifier.Where(x => x == "add").Optional()
+             from colon in Colon
+             from resetValue in MonitorStatements
+             select new ResetAttribute(resetValue, !addSuffix.IsEmpty)).Named("reset section");
 
         public static readonly Parser<IEnumerable<int>> IrqRange =
             (from leftSide in HexadecimalUnsignedInt.Or(DecimalUnsignedInt)
              from dash in Minus
              from rightSide in HexadecimalUnsignedInt.Or(DecimalUnsignedInt).Where(x => x != leftSide).Named(string.Format("number other than {0}", leftSide))
              select MakeSimpleRange(checked((int)leftSide), checked((int)rightSide)));
+
+        public static Parser<IOption<T>> XOptional<T>(this Parser<T> parser)
+        {
+            if(parser == null) throw new ArgumentNullException(nameof(parser));
+
+            return i =>
+            {
+                var pr = parser(i);
+
+                if(pr.WasSuccessful)
+                    return Result.Success(new Some<T>(pr.Value), pr.Remainder);
+
+                if(!pr.Remainder.Equals(i))
+                {
+                    return Result.Failure<IOption<T>>(pr.Remainder, pr.Message, pr.Expectations);
+                }
+
+                return Result.Success(new None<T>(), i);
+            };
+        }
+
+        public static Parser<string> MakeKeyword(string keyword)
+        {
+            Keywords.Add(keyword);
+            return GeneralIdentifier.Where(x => x == keyword).Named(keyword + " keyword");
+        }
+
+        public static Parser<T> MakeKeyword<T>(string keyword, T obj)
+        {
+            Keywords.Add(keyword);
+            return GeneralIdentifier.Where(x => x == keyword).Named(keyword + " keyword").Select(x => obj);
+        }
+
+        public static IEnumerable<int> MakeSimpleRange(int begin, int end)
+        {
+            if(end >= begin)
+            {
+                return Enumerable.Range(begin, end - begin + 1);
+            }
+            return Enumerable.Range(end, begin - end + 1).Reverse();
+        }
 
         public static Parser<SingleOrMultiIrqEnd> GetIrqEnd(bool source)
         {
@@ -310,6 +376,7 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
              select new IrqAttribute(source.GetOrDefault(), new[] { new IrqDestinations(null, null) }));
 
         public static readonly Parser<Attribute> Attribute = InitAttribute
+            .Or<Attribute>(ResetAttribute)
             .Or<Attribute>(ConstructorOrPropertyAttribute)
             .Or(NoneIrqAttribute)
             .Or(SimpleIrqAttribute)
@@ -350,50 +417,33 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
              from entries in Entries.XOptional()
              select new Description(usings.GetOrElse(new UsingEntry[0]), entries.GetOrElse(new Entry[0]))).End();
 
-        public static Parser<IOption<T>> XOptional<T>(this Parser<T> parser)
-        {
-            if(parser == null) throw new ArgumentNullException(nameof(parser));
-
-            return i =>
-            {
-                var pr = parser(i);
-
-                if(pr.WasSuccessful)
-                    return Result.Success(new Some<T>(pr.Value), pr.Remainder);
-
-                if(!pr.Remainder.Equals(i))
-                {
-                    return Result.Failure<IOption<T>>(pr.Remainder, pr.Message, pr.Expectations);
-                }
-
-                return Result.Success(new None<T>(), i);
-            };
-        }
-
         internal abstract class AbstractOption<T> : IOption<T>
         {
-            public abstract bool IsEmpty { get; }
-
-            public bool IsDefined
-            {
-                get { return !IsEmpty; }
-            }
-
             public T GetOrDefault()
             {
                 return IsEmpty ? default(T) : Get();
             }
 
             public abstract T Get();
+
+            public bool IsDefined
+            {
+                get { return !IsEmpty; }
+            }
+
+            public abstract bool IsEmpty { get; }
         }
 
         internal sealed class Some<T> : AbstractOption<T>
         {
-            private readonly T _value;
-
             public Some(T value)
             {
                 _value = value;
+            }
+
+            public override T Get()
+            {
+                return _value;
             }
 
             public override bool IsEmpty
@@ -401,44 +451,20 @@ namespace Antmicro.Renode.PlatformDescription.Syntax
                 get { return false; }
             }
 
-            public override T Get()
-            {
-                return _value;
-            }
+            private readonly T _value;
         }
 
         internal sealed class None<T> : AbstractOption<T>
         {
-            public override bool IsEmpty
-            {
-                get { return true; }
-            }
-
             public override T Get()
             {
                 throw new InvalidOperationException("Cannot get value from None.");
             }
-        }
 
-        public static Parser<string> MakeKeyword(string keyword)
-        {
-            Keywords.Add(keyword);
-            return GeneralIdentifier.Where(x => x == keyword).Named(keyword + " keyword");
-        }
-
-        public static Parser<T> MakeKeyword<T>(string keyword, T obj)
-        {
-            Keywords.Add(keyword);
-            return GeneralIdentifier.Where(x => x == keyword).Named(keyword + " keyword").Select(x => obj);
-        }
-
-        public static IEnumerable<int> MakeSimpleRange(int begin, int end)
-        {
-            if(end >= begin)
+            public override bool IsEmpty
             {
-                return Enumerable.Range(begin, end - begin + 1);
+                get { return true; }
             }
-            return Enumerable.Range(end, begin - end + 1).Reverse();
         }
     }
 }

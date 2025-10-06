@@ -7,10 +7,10 @@
 using System;
 using System.Linq;
 using System.Text;
+
 using Antmicro.Renode.Peripherals.UART;
 using Antmicro.Renode.Testing;
 using Antmicro.Renode.Time;
-using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.RobotFramework
 {
@@ -44,12 +44,25 @@ namespace Antmicro.Renode.RobotFramework
             GetTesterOrThrowException(testerId).ClearReport();
         }
 
+        [RobotFrameworkKeyword]
+        public void RegisterFailingUartString(string pattern, bool treatAsRegex = false, int? testerId = null)
+        {
+            GetTesterOrThrowException(testerId).RegisterFailingString(pattern, treatAsRegex);
+        }
+
+        [RobotFrameworkKeyword]
+        public void UnregisterFailingUartString(string pattern, bool treatAsRegex = false, int? testerId = null)
+        {
+            GetTesterOrThrowException(testerId).UnregisterFailingString(pattern, treatAsRegex);
+        }
+
         [RobotFrameworkKeyword(replayMode: Replay.Always)]
         public int CreateTerminalTester(string uart, float? timeout = null, string machine = null, string endLineOption = null,
-            bool? defaultPauseEmulation = null, bool? defaultMatchNextLine = null, bool binaryMode = false)
+            bool? defaultPauseEmulation = null, bool? defaultWaitForEcho = null, bool? defaultMatchNextLine = null, bool binaryMode = false)
         {
             this.defaultPauseEmulation = defaultPauseEmulation.GetValueOrDefault();
             this.defaultMatchNextLine = defaultMatchNextLine.GetValueOrDefault();
+            this.defaultWaitForEcho = defaultWaitForEcho ?? true;
 
             return CreateNewTester(uartObject =>
             {
@@ -82,8 +95,13 @@ namespace Antmicro.Renode.RobotFramework
         {
             return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                return tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
+                var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
                 pauseEmulation ?? defaultPauseEmulation, matchNextLine ?? defaultMatchNextLine);
+                if(result?.IsFailingString == true)
+                {
+                    throw new InvalidOperationException($"Terminal tester failed!\n\nTest failing entry has been found on UART:\n{result.Line}");
+                }
+                return result;
             });
         }
 
@@ -93,8 +111,13 @@ namespace Antmicro.Renode.RobotFramework
         {
             return DoTest(timeout, testerId, (tester, timeInterval) =>
             {
-                return tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
+                var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine,
                     pauseEmulation ?? defaultPauseEmulation, matchFromNextLine ?? defaultMatchNextLine);
+                if(result?.IsFailingString == true)
+                {
+                    throw new InvalidOperationException($"Terminal tester failed!\n\nTest failing entry has been found on UART:\n{result.Line}");
+                }
+                return result;
             });
         }
 
@@ -106,7 +129,10 @@ namespace Antmicro.Renode.RobotFramework
             {
                 var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine: true,
                     pauseEmulation ?? defaultPauseEmulation, matchStart ?? defaultMatchNextLine);
-
+                if(result?.IsFailingString == true)
+                {
+                    throw new InvalidOperationException($"Terminal tester failed!\n\nTest failing entry has been found on UART:\n{result.Line}");
+                }
                 return result != null ? new BinaryTerminalTesterResult(result) : null;
             }, expectBinaryModeTester: true);
         }
@@ -125,7 +151,7 @@ namespace Antmicro.Renode.RobotFramework
             var result = tester.WaitFor(content, timeInterval, treatAsRegex, includeUnfinishedLine, false);
             if(result != null)
             {
-                throw new InvalidOperationException($"Terminal tester failed!\n\nUnexpected entry has been found on UART#:\n{result.line}");
+                throw new InvalidOperationException($"Terminal tester failed!\n\nUnexpected entry has been found on UART#:\n{result.Line}");
             }
         }
 
@@ -159,11 +185,11 @@ namespace Antmicro.Renode.RobotFramework
         }
 
         [RobotFrameworkKeyword]
-        public TerminalTesterResult WriteLineToUart(string content = "", int? testerId = null, bool waitForEcho = true, bool? pauseEmulation = null)
+        public TerminalTesterResult WriteLineToUart(string content = "", int? testerId = null, bool? waitForEcho = null, bool? pauseEmulation = null)
         {
             var tester = GetTesterOrThrowException(testerId);
             tester.WriteLine(content);
-            if(waitForEcho && tester.WaitFor(content, includeUnfinishedLine: true, pauseEmulation: pauseEmulation ?? defaultPauseEmulation) == null)
+            if((waitForEcho ?? defaultWaitForEcho) && tester.WaitFor(content, includeUnfinishedLine: true, pauseEmulation: pauseEmulation ?? defaultPauseEmulation) == null)
             {
                 OperationFail(tester);
             }
@@ -219,25 +245,28 @@ namespace Antmicro.Renode.RobotFramework
         }
 
         private bool defaultPauseEmulation;
+        private bool defaultWaitForEcho;
         private bool defaultMatchNextLine;
         private float globalTimeout = 8;
 
         // The 'binary strings' used internally are not safe to pass through XML-RPC, probably due to special character escaping
-        // issues. See https://github.com/antmicro/renode/commit/7739c14c6275058e71da30997c8e0f80144ed81c 
+        // issues. See https://github.com/antmicro/renode/commit/7739c14c6275058e71da30997c8e0f80144ed81c
         // and Misc.StripNonSafeCharacters. Here we represent the results as byte[] which get represented as base64 in the
         // XML-RPC body and <class 'bytes'> in the Python client.
         public class BinaryTerminalTesterResult
         {
             public BinaryTerminalTesterResult(TerminalTesterResult result)
             {
-                this.content = Encode(result.line) ?? Array.Empty<byte>();
-                this.timestamp = timestamp;
-                this.groups = result.groups.Select(Encode).ToArray();
+                this.Content = Encode(result.Line) ?? Array.Empty<byte>();
+                this.Timestamp = Timestamp;
+                this.Groups = result.Groups.Select(Encode).ToArray();
             }
 
-            public byte[] content { get; }
-            public double timestamp { get; }
-            public byte[][] groups { get; }
+            public byte[] Content { get; }
+
+            public double Timestamp { get; }
+
+            public byte[][] Groups { get; }
 
             private byte[] Encode(string str)
             {

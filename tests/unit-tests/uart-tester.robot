@@ -2,6 +2,9 @@
 Create Machine
     Execute Command          i @scripts/single-node/sifive_fe310.resc
 
+Create Tock Machine
+    Execute Command          i @scripts/single-node/stm32f4_tock.resc
+
 Create Trivial Machine
     Execute Command          mach create
     Execute Command          machine LoadPlatformDescriptionFromString "uart0: UART.TrivialUart @ sysbus 0x1000"
@@ -156,7 +159,7 @@ Should Allow Waiting For Byte String Containing All Byte Values
 
     # Exact match required
     ${m}=  Wait For Bytes On Uart  ${{$bytes.hex()}}  matchStart=true
-    Should Be Equal         ${m.content}  ${bytes}
+    Should Be Equal         ${m.Content}  ${bytes}
 
 Should Allow Waiting For Byte String Containing All Byte Values As Regex
     Create Trivial Machine
@@ -171,16 +174,47 @@ Should Allow Waiting For Byte String Containing All Byte Values As Regex
     # First one verbatim (might as well not have used a regex)
     ${bytes_re}=  Evaluate  "".join(rf"\\x{b:02x}" for b in $bytes)
     ${m}=  Wait For Bytes On Uart  ${bytes_re}  matchStart=true  treatAsRegex=true
-    Should Be Equal         ${m.content}  ${bytes}
+    Should Be Equal         ${m.Content}  ${bytes}
 
     # Note that due to how the tester works (evaluating the pattern after every byte written)
     # if the entire string hadn't already been printed at assertion time then the ? would not
     # be required for a non-greedy match
     ${m}=  Wait For Bytes On Uart  \\x00.*?\\xff  matchStart=true  treatAsRegex=true
-    Should Be Equal         ${m.content}  ${bytes}
+    Should Be Equal         ${m.Content}  ${bytes}
 
     # And now with some groups
     ${m}=  Wait For Bytes On Uart  (\\x11.*)\\x41.*?([\\x50-\\x5f]+).*?\\xfd  treatAsRegex=true
-    Should Be Equal         ${m.content}  ${{$bytes[0x11:-2]}}
-    Should Be Equal         ${m.groups[0]}  ${{bytes(range(0x11, 0x41))}}
-    Should Be Equal         ${m.groups[1]}  ${{bytes(range(0x50, 0x60))}}
+    Should Be Equal         ${m.Content}  ${{$bytes[0x11:-2]}}
+    Should Be Equal         ${m.Groups[0]}  ${{bytes(range(0x11, 0x41))}}
+    Should Be Equal         ${m.Groups[1]}  ${{bytes(range(0x50, 0x60))}}
+
+Should Fail On Failing String
+    Create Tock Machine
+
+    Create Terminal Tester          sysbus.usart2
+    Register Failing Uart String    Entering.*loop  treatAsRegex=true
+
+    Run Keyword And Expect Error
+    ...                             *Test failing entry*
+    ...                             Wait For Line On Uart  D2
+
+Should Fail On Failing String On Specific Tester
+    Create Tock Machine
+
+    ${tester1}=                     Create Terminal Tester  sysbus.usart3
+    ${tester2}=                     Create Terminal Tester  sysbus.usart2
+    Register Failing Uart String    D1  testerId=${tester2}
+
+    Run Keyword And Expect Error
+    ...                             *Test failing entry*
+    ...                             Wait For Line On Uart  D1  testerId=${tester2}
+
+Should Unregister Failing String
+    Create Tock Machine
+
+    Create Terminal Tester          sysbus.usart2
+
+    Register Failing Uart String    D1
+    Unregister Failing Uart String  D1
+
+    Wait For Line On Uart           D1

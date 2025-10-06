@@ -1,8 +1,8 @@
 ﻿//
-// Copyright (c) 2010-2024 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
-//  This file is licensed under the MIT License.
-//  Full license text is available in 'licenses/MIT.txt'.
+// This file is licensed under the MIT License.
+// Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
 using System.IO;
@@ -13,29 +13,32 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
-using System.ComponentModel;
-using Antmicro.Renode.Core;
+
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Exceptions;
-using Antmicro.Renode.Peripherals;
 using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Plugins.CoSimulationPlugin.Connection.Protocols;
+
 #if !PLATFORM_WINDOWS
 using Mono.Unix.Native;
 #endif
 
 namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
 {
-    public class SocketConnection : ICoSimulationConnection, IDisposable
+    public class SocketConnection : ICoSimulationConnection, IEmulationElement, IDisposable
     {
-        public SocketConnection(IEmulationElement parentElement, int timeoutInMilliseconds, Action<ProtocolMessage> receiveAction, string address = null)
+        public SocketConnection(IEmulationElement parentElement, int timeoutInMilliseconds, Action<ProtocolMessage> receiveAction,
+            string address = null, int mainListenPort = 0, int asyncListenPort = 0, string stdoutFile = null, string stderrFile = null, LogLevel renodeLogLevel = null)
         {
             this.parentElement = parentElement;
             this.address = address ?? DefaultAddress;
+            this.stderrFile = stderrFile;
+            this.stdoutFile = stdoutFile;
+            this.renodeLogLevel = renodeLogLevel;
             timeout = timeoutInMilliseconds;
             receivedHandler = receiveAction;
-            mainSocketComunicator = new SocketComunicator(parentElement, timeout, this.address);
-            asyncSocketComunicator = new SocketComunicator(parentElement, Timeout.Infinite, this.address);
+            mainSocketCommunicator = new SocketCommunicator(parentElement, timeout, this.address, mainListenPort);
+            asyncSocketCommunicator = new SocketCommunicator(parentElement, Timeout.Infinite, this.address, asyncListenPort);
 
             pauseMRES = new ManualResetEventSlim(initialState: true);
             receiveThread = new Thread(ReceiveLoop)
@@ -54,13 +57,13 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
         public void Connect()
         {
             var success = true;
-            if(!mainSocketComunicator.AcceptConnection(timeout))
+            if(!mainSocketCommunicator.AcceptConnection(timeout))
             {
                 parentElement.Log(LogLevel.Error, $"Main socket failed to accept connection after timeout of {timeout}ms.");
                 success = false;
             }
 
-            if(success && !asyncSocketComunicator.AcceptConnection(timeout))
+            if(success && !asyncSocketCommunicator.AcceptConnection(timeout))
             {
                 parentElement.Log(LogLevel.Error, $"Async socket failed to accept connection after timeout of {timeout}ms.");
                 success = false;
@@ -74,17 +77,17 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
 
             if(!success)
             {
-                mainSocketComunicator.ResetConnections();
-                asyncSocketComunicator.ResetConnections();
-                KillVerilatedProcess();
+                mainSocketCommunicator.ResetConnections();
+                asyncSocketCommunicator.ResetConnections();
+                KillCoSimulatedProcess();
 
                 LogAndThrowRE($"Connection to the cosimulated peripheral failed!");
             }
             else
             {
                 // If connected succesfully, listening sockets can be closed
-                mainSocketComunicator.CloseListener();
-                asyncSocketComunicator.CloseListener();
+                mainSocketCommunicator.CloseListener();
+                asyncSocketCommunicator.CloseListener();
 
                 parentElement.Log(LogLevel.Debug, "Connected to the cosimulated peripheral!");
             }
@@ -102,9 +105,10 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
         {
             if(!IsConnected)
             {
+                parentElement.Log(LogLevel.Debug, "Didn't send message {0} - not connected to co-simulation", message);
                 return false;
             }
-            return mainSocketComunicator.TrySendMessage(message);
+            return mainSocketCommunicator.TrySendMessage(message);
         }
 
         public bool TryRespond(ProtocolMessage message)
@@ -123,7 +127,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 message = default(ProtocolMessage);
                 return false;
             }
-            return mainSocketComunicator.TryReceiveMessage(out message);
+            return mainSocketCommunicator.TryReceiveMessage(out message);
         }
 
         public void HandleMessage()
@@ -138,7 +142,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 return;
             }
 
-            asyncSocketComunicator.CancelCommunication();
+            asyncSocketCommunicator.CancelCommunication();
             lock(receiveThreadLock)
             {
                 if(receiveThread.IsAlive)
@@ -151,7 +155,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             {
                 parentElement.DebugLog("Sending 'Disconnect' message to close peripheral gracefully...");
                 TrySendMessage(new ProtocolMessage(ActionType.Disconnect, 0, 0, ProtocolMessage.NoPeripheralIndex));
-                mainSocketComunicator.CancelCommunication();
+                mainSocketCommunicator.CancelCommunication();
             }
 
             if(cosimulatedProcess != null)
@@ -159,25 +163,29 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 // Ask cosimulatedProcess to close, kill if it doesn't
                 if(!cosimulatedProcess.HasExited)
                 {
-                    parentElement.DebugLog($"Verilated peripheral '{simulationFilePath}' is still working...");
+                    parentElement.DebugLog($"Co-simulated process '{simulationFilePath}' is still working...");
                     if(cosimulatedProcess.WaitForExit(500))
                     {
-                        parentElement.DebugLog("Verilated peripheral exited gracefully.");
+                        parentElement.DebugLog("Co-simulated process exited gracefully.");
                     }
                     else
                     {
-                        KillVerilatedProcess();
-                        parentElement.Log(LogLevel.Warning, "Verilated peripheral had to be killed.");
+                        KillCoSimulatedProcess();
+                        parentElement.Log(LogLevel.Warning, "Co-simulated process had to be killed.");
                     }
                 }
                 cosimulatedProcess.Dispose();
             }
 
-            mainSocketComunicator.Dispose();
-            asyncSocketComunicator.Dispose();
+            // Close output streams
+            stdoutStream?.Close();
+            stderrStream?.Close();
+
+            mainSocketCommunicator.Dispose();
+            asyncSocketCommunicator.Dispose();
         }
 
-        public bool IsConnected => mainSocketComunicator.Connected;
+        public bool IsConnected => mainSocketCommunicator.Connected;
 
         public string Context
         {
@@ -185,6 +193,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             {
                 return this.context;
             }
+
             set
             {
                 if(IsConnected)
@@ -206,11 +215,11 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 }
                 parentElement.Log(LogLevel.Debug,
                     "Trying to run and connect to the cosimulated peripheral '{0}' through ports {1} and {2}...",
-                    value, mainSocketComunicator.ListenerPort, asyncSocketComunicator.ListenerPort);
+                    value, mainSocketCommunicator.ListenerPort, asyncSocketCommunicator.ListenerPort);
 #if !PLATFORM_WINDOWS
                 Mono.Unix.Native.Syscall.chmod(value, FilePermissions.S_IRWXU); //setting permissions to 0x700
 #endif
-                InitVerilatedProcess(value);
+                InitCoSimulatedProcess(value);
             }
         }
 
@@ -221,9 +230,9 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 try
                 {
                     return String.Format(this.context,
-                        mainSocketComunicator.ListenerPort, asyncSocketComunicator.ListenerPort, address);
+                        mainSocketCommunicator.ListenerPort, asyncSocketCommunicator.ListenerPort, address);
                 }
-                catch (FormatException e)
+                catch(FormatException e)
                 {
                     throw new RecoverableException(e.Message);
                 }
@@ -232,14 +241,14 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
 
         private void ReceiveLoop()
         {
-            while(asyncSocketComunicator.Connected)
+            while(asyncSocketCommunicator.Connected)
             {
                 pauseMRES.Wait();
                 if(disposeInitiated != 0)
                 {
                     break;
                 }
-                else if(asyncSocketComunicator.TryReceiveMessage(out var message))
+                else if(asyncSocketCommunicator.TryReceiveMessage(out var message))
                 {
                     HandleReceived(message);
                 }
@@ -250,20 +259,78 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             }
         }
 
-        private void InitVerilatedProcess(string filePath)
+        private void InitCoSimulatedProcess(string filePath)
         {
             try
             {
+                bool redirectStdoutToFile = !String.IsNullOrWhiteSpace(stdoutFile);
+                bool redirectStderrToFile = !String.IsNullOrWhiteSpace(stderrFile);
+                bool redirectOutputToLog = renodeLogLevel != null;
                 cosimulatedProcess = new Process
                 {
                     StartInfo = new ProcessStartInfo(filePath)
                     {
                         UseShellExecute = false,
-                        Arguments = ConnectionParameters
+                        Arguments = ConnectionParameters,
+                        RedirectStandardOutput = redirectStdoutToFile || redirectOutputToLog,
+                        RedirectStandardError = redirectStderrToFile || redirectOutputToLog,
                     }
                 };
 
+                // Discard/write any data to prevent the stream from filling up and blocking the process
+                if(redirectStdoutToFile)
+                {
+                    if(stdoutFile.ToLowerInvariant() != StreamDiscardConstant)
+                    {
+                        stdoutStream = new StreamWriter(stdoutFile);
+                        cosimulatedProcess.OutputDataReceived += (s, e) => stdoutStream.WriteLine(e.Data);
+                    }
+                    else if(!redirectOutputToLog)
+                    {
+                        cosimulatedProcess.OutputDataReceived += (s, e) => { };
+                    }
+                }
+                if(redirectStderrToFile)
+                {
+                    if(stderrFile.ToLowerInvariant() != StreamDiscardConstant)
+                    {
+                        stderrStream = new StreamWriter(stderrFile);
+                        cosimulatedProcess.ErrorDataReceived += (s, e) => stderrStream.WriteLine(e.Data);
+                    }
+                    else if(!redirectOutputToLog)
+                    {
+                        cosimulatedProcess.ErrorDataReceived += (s, e) => { };
+                    }
+                }
+
+                if(redirectOutputToLog)
+                {
+                    cosimulatedProcess.OutputDataReceived += (s, e) =>
+                    {
+                        if(!String.IsNullOrWhiteSpace(e.Data))
+                        {
+                            this.Log(renodeLogLevel, "cosimulation: {0}", e.Data);
+                        }
+                    };
+                    cosimulatedProcess.ErrorDataReceived += (s, e) =>
+                    {
+                        if(!String.IsNullOrWhiteSpace(e.Data))
+                        {
+                            this.Log(LogLevel.Error, "cosimulation: {0}", e.Data);
+                        }
+                    };
+                }
+
                 cosimulatedProcess.Start();
+
+                if(redirectStdoutToFile || redirectOutputToLog)
+                {
+                    cosimulatedProcess.BeginOutputReadLine();
+                }
+                if(redirectStderrToFile || redirectOutputToLog)
+                {
+                    cosimulatedProcess.BeginErrorReadLine();
+                }
             }
             catch(Exception e)
             {
@@ -291,7 +358,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             throw new CpuAbortException();
         }
 
-        private void KillVerilatedProcess()
+        private void KillCoSimulatedProcess()
         {
             try
             {
@@ -328,30 +395,33 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
         {
             switch(message.ActionId)
             {
-                case ActionType.LogMessage:
-                    // message.Address is used to transfer log length
-                    if(asyncSocketComunicator.TryReceiveString(out var log, (int)message.Address))
-                    {
-                        parentElement.Log((LogLevel)(int)message.Data, $"Verilated peripheral: {log}");
-                    }
-                    else
-                    {
-                        parentElement.Log(LogLevel.Warning, "Failed to receive log message!");
-                    }
-                    break;
-                default:
-                    receivedHandler(message);
-                    break;
+            case ActionType.LogMessage:
+                // message.Address is used to transfer log length
+                if(asyncSocketCommunicator.TryReceiveString(out var log, (int)message.Address))
+                {
+                    parentElement.Log((LogLevel)(int)message.Data, $"Co-simulation: {log}");
+                }
+                else
+                {
+                    parentElement.Log(LogLevel.Warning, "Failed to receive log message!");
+                }
+                break;
+            default:
+                receivedHandler(message);
+                break;
             }
         }
+
+        private StreamWriter stdoutStream;
+        private StreamWriter stderrStream;
 
         private volatile int disposeInitiated;
         private string simulationFilePath;
         private string context = "{0} {1} {2}";
         private Process cosimulatedProcess;
-        private SocketComunicator mainSocketComunicator;
-        private SocketComunicator asyncSocketComunicator;
-        private Action<ProtocolMessage> receivedHandler;
+        private readonly SocketCommunicator mainSocketCommunicator;
+        private readonly SocketCommunicator asyncSocketCommunicator;
+        private readonly Action<ProtocolMessage> receivedHandler;
 
         private readonly IEmulationElement parentElement;
         private readonly int timeout;
@@ -360,17 +430,24 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
         private readonly object receiveThreadLock = new object();
         private readonly ManualResetEventSlim pauseMRES;
 
+        private readonly string stdoutFile;
+        private readonly string stderrFile;
+        private readonly LogLevel renodeLogLevel;
+
+        private const string StreamDiscardConstant = "[discard]";
+
         private const string DefaultAddress = "127.0.0.1";
         private const int MaxPendingConnections = 1;
 
-        private class SocketComunicator
+        private class SocketCommunicator
         {
-            public SocketComunicator(IEmulationElement logger, int timeoutInMilliseconds, string address)
+            public SocketCommunicator(IEmulationElement logger, int timeoutInMilliseconds, string address, int listenPort)
             {
                 disposalCTS = new CancellationTokenSource();
                 channelTaskFactory = new TaskFactory<int>(disposalCTS.Token);
                 this.logger = logger;
                 this.address = address;
+                this.listenPort = listenPort;
                 timeout = timeoutInMilliseconds;
                 ListenerPort = CreateListenerAndStartListening();
             }
@@ -420,6 +497,9 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
 
             public bool TrySendMessage(ProtocolMessage message)
             {
+#if DEBUG_LOG_COSIM_MESSAGES
+                Logger.Log(LogLevel.Noisy, "Sending message to co-sim: {0}", message);
+#endif
                 var serializedMessage = message.Serialize();
                 var size = serializedMessage.Length;
                 var task = channelTaskFactory.FromAsync(
@@ -431,6 +511,9 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
 
             public bool TryReceiveMessage(out ProtocolMessage message)
             {
+#if DEBUG_LOG_COSIM_MESSAGES
+                Logger.Log(LogLevel.Noisy, "Trying to receive message from co-sim");
+#endif
                 message = default(ProtocolMessage);
 
                 var result = TryReceive(out var buffer, Marshal.SizeOf(message));
@@ -438,6 +521,9 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                 {
                     message.Deserialize(buffer);
                 }
+#if DEBUG_LOG_COSIM_MESSAGES
+                Logger.Log(LogLevel.Noisy, "Received message from co-sim: {0}", message);
+#endif
                 return result;
             }
 
@@ -469,12 +555,13 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             }
 
             public int ListenerPort { get; private set; }
+
             public bool Connected => socket?.Connected ?? false;
 
             private int CreateListenerAndStartListening()
             {
                 listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                listener.Bind(new IPEndPoint(IPAddress.Parse(address), 0));
+                listener.Bind(new IPEndPoint(IPAddress.Parse(address), listenPort));
 
                 listener.Listen(MaxPendingConnections);
                 return (listener.LocalEndPoint as IPEndPoint).Port;
@@ -499,7 +586,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                     logger.DebugLog("Send/Receive task was canceled.");
                 }
 
-                if(task.Status != TaskStatus.RanToCompletion || task.Result != size)
+                if(task.Status != TaskStatus.RanToCompletion)
                 {
                     if(task.Status == TaskStatus.Canceled)
                     {
@@ -507,10 +594,19 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
                     }
                     else
                     {
-                        logger.DebugLog("Error while trying to Send/Receive!");
+                        logger.DebugLog("Error while trying to Send/Receive. Task status: {0}", task.Status);
                     }
                     return false;
                 }
+
+                if(task.Result != size)
+                {
+                    logger.DebugLog("Error while trying to Send/Receive. Unexpected number of sent/received bytes: {0} (expected {1})", task.Result, size);
+                    return false;
+                }
+#if DEBUG_LOG_COSIM_MESSAGES
+                logger.NoisyLog("Message sent/received succesfully", task.Status);
+#endif
                 return true;
             }
 
@@ -518,6 +614,7 @@ namespace Antmicro.Renode.Plugins.CoSimulationPlugin.Connection
             private Socket socket;
 
             private readonly int timeout;
+            private readonly int listenPort;
             private readonly string address;
             private readonly CancellationTokenSource disposalCTS;
             private readonly TaskFactory<int> channelTaskFactory;

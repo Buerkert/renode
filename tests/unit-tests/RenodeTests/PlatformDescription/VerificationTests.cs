@@ -5,12 +5,12 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+
 using Antmicro.Renode.Core;
-using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.PlatformDescription;
 using Antmicro.Renode.Utilities;
+
 using NUnit.Framework;
-using Antmicro.Renode.Peripherals.CPU;
 
 namespace Antmicro.Renode.UnitTests.PlatformDescription
 {
@@ -38,15 +38,14 @@ mock: @sysbus <0x0, +0x100>";
         }
 
         [Test]
-        public void ShouldNotProcessWithoutTypeNameInFirstEntry()
+        public void ShouldProcessWithoutTypeNameInFirstEntry()
         {
             var source = @"
 mock: @sysbus <0x0, 0x1000>
 
 mock: Antmicro.Renode.UnitTests.Mocks.EmptyPeripheral";
 
-            var exception = Assert.Throws<ParsingException>(() => ProcessSource(source));
-            Assert.AreEqual(ParsingError.TypeNotSpecifiedInFirstVariableUse, exception.Error);
+            ProcessSource(source);
         }
 
         [Test]
@@ -477,7 +476,7 @@ peripheral: Antmicro.Renode.UnitTests.Mocks.EmptyPeripheral @ register regPoint"
         {
             var source = @"
 peripheral: Antmicro.Renode.UnitTests.Mocks.EmptyPeripheral as ""alias""";
-            
+
             var exception = Assert.Throws<ParsingException>(() => ProcessSource(source));
             Assert.AreEqual(ParsingError.AliasWithoutRegistration, exception.Error);
         }
@@ -559,7 +558,7 @@ p: Antmicro.Renode.UnitTests.Mocks.MockPeripheralWithProtectedConstructor @ sysb
 
         private static void ProcessSource(string source)
         {
-            var creationDriver = new CreationDriver(new Machine(), new FakeUsingResolver(), new FakeInitHandler());
+            var creationDriver = new CreationDriver(new Machine(), new FakeUsingResolver(), new FakeScriptHandler());
             creationDriver.ProcessDescription(source);
         }
     }

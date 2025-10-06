@@ -15,11 +15,12 @@ CLEAN=false
 PACKAGES=false
 NIGHTLY=false
 PORTABLE=false
+SOURCE_PACKAGE=false
 HEADLESS=false
 SKIP_FETCH=false
-TLIB_ONLY=false
+EXTERNAL_LIB_ONLY=false
 TLIB_EXPORT_COMPILE_COMMANDS=false
-TLIB_ARCH=""
+EXTERNAL_LIB_ARCH=""
 NET=false
 TFM="net462"
 GENERATE_DOTNET_BUILD_TARGET=true
@@ -32,14 +33,15 @@ HOST_ARCH="i386"
 CMAKE_COMMON=""
 
 function print_help() {
-  echo "Usage: $0 [-cdvspnt] [-b properties-file.csproj] [--no-gui] [--skip-fetch] [--profile-build] [--tlib-only] [--tlib-export-compile-commands] [--tlib-arch <arch>] [--host-arch i386|aarch64] [-- <ARGS>]"
+  echo "Usage: $0 [-cdvspnt] [-b properties-file.csproj] [--no-gui] [--skip-fetch] [--profile-build] [--external-lib-only] [--tlib-export-compile-commands] [--external-lib-arch <arch>] [--host-arch i386|aarch64] [--source-package] [-- <ARGS>]"
   echo
   echo "-c                                clean instead of building"
   echo "-d                                build Debug configuration"
   echo "-v                                verbose output"
   echo "-p                                create packages after building"
-  echo "-n                                create nightly packages after building"
-  echo "-t                                create a portable package (experimental, Linux only)"
+  echo "-t                                create a portable package"
+  echo "--source-package                  build a source package (dotnet on Linux only)"
+  echo "-n                                tag built packages as nightly"
   echo "-s                                update submodules"
   echo "-b                                custom build properties file"
   echo "-o                                custom output directory"
@@ -50,11 +52,13 @@ function print_help() {
   echo "-B                                bundle target runtime (default value: $RID, requires --net, -t)"
   echo "-F                                select the target framework for which Renode should be built (default value: $TFM)"
   echo "--profile-build                   build optimized for profiling"
-  echo "--tlib-only                       only build tlib"
-  echo "--tlib-arch                       build only single arch (implies --tlib-only)"
-  echo "--tlib-export-compile-commands    build tlibs with 'compile_commands.json' (requires --tlib-arch)"
+  echo "--tlib-coverage                   build tlib with coverage reporting"
+  echo "--external-lib-only               only build external libraries"
+  echo "--external-lib-arch               build only single arch (implies --external-lib-only)"
+  echo "--tlib-export-compile-commands    build tlibs with 'compile_commands.json' (requires --external-lib-arch)"
   echo "--host-arch                       build with a specific tcg host architecture (default: i386)"
   echo "--skip-dotnet-target-generation   don't generate 'Directory.Build.targets' file, useful when experimenting with different build settings"
+  echo "--tcg-opcode-backtrace            collect a backtrace for each emitted TCG opcode, to track internal TCG errors (implies Debug configuration)"
   echo "<ARGS>                            arguments to pass to the build system"
 }
 
@@ -75,7 +79,6 @@ do
       ;;
     n)
       NIGHTLY=true
-      PACKAGES=true
       ;;
     t)
       PORTABLE=true
@@ -119,25 +122,31 @@ do
           TFM="net8.0"
           PARAMS+=(p:NET=true)
           ;;
+        "source-package")
+          SOURCE_PACKAGE=true
+          ;;
         "profile-build")
-          CMAKE_COMMON="-DPROFILING_BUILD=ON"
+          CMAKE_COMMON+=" -DPROFILING_BUILD=ON"
           ;;
-        "tlib-only")
-          TLIB_ONLY=true
+        "external-lib-only")
+          EXTERNAL_LIB_ONLY=true
           ;;
-        "tlib-arch")
-          # This only makes sense with '--tlib-only' set; it might as well imply it
-          TLIB_ONLY=true
+        "external-lib-arch")
+          # This only makes sense with '--external-lib-only' set; it might as well imply it
+          EXTERNAL_LIB_ONLY=true
           shift $((OPTIND-1))
-          TLIB_ARCH=$1
+          EXTERNAL_LIB_ARCH=$1
           OPTIND=2
           ;;
         "tlib-export-compile-commands")
-          if [ -z $TLIB_ARCH ]; then
-              echo "--tlib-export-compile-commands requires --tlib-arch begin set"
+          if [ -z $EXTERNAL_LIB_ARCH ]; then
+              echo "--tlib-export-compile-commands requires --external-lib-arch being set"
               exit 1
           fi
           TLIB_EXPORT_COMPILE_COMMANDS=true
+          ;;
+        "tlib-coverage")
+          CMAKE_COMMON+=" -DCOVERAGE_REPORTING=ON"
           ;;
         "host-arch")
           shift $((OPTIND-1))
@@ -153,6 +162,12 @@ do
           ;;
         "skip-dotnet-target-generation")
           GENERATE_DOTNET_BUILD_TARGET=false
+          ;;
+        "tcg-opcode-backtrace")
+          # Doesn't make sense without debug.
+          CONFIGURATION="Debug"
+
+          CMAKE_COMMON+=" -DTCG_OPCODE_BACKTRACE=ON"
           ;;
         *)
           print_help
@@ -372,7 +387,7 @@ pushd "$ROOT_PATH/tools/building" > /dev/null
 ./check_weak_implementations.sh
 popd > /dev/null
 
-PARAMS+=(p:Configuration="${CONFIGURATION}${BUILD_TARGET}" p:GenerateFullPaths=true p:Platform="\"$BUILD_PLATFORM\"")
+PARAMS+=(p:Configuration="${CONFIGURATION}${BUILD_TARGET}" p:GenerateFullPaths=true p:Platform="\"$BUILD_PLATFORM\"" p:Architecture="$HOST_ARCH")
 
 # Paths for tlib
 CORES_BUILD_PATH="$CORES_PATH/obj/$CONFIGURATION"
@@ -399,26 +414,43 @@ fi
 # If you are adding a new core or endianness add it here to have the correct tlib built
 CORES=(arm.le arm.be arm64.le arm-m.le arm-m.be ppc.le ppc.be ppc64.le ppc64.be i386.le x86_64.le riscv.le riscv64.le sparc.le sparc.be xtensa.le)
 
-# if '--tlib-arch' was used - pick the first matching one
-if [[ ! -z $TLIB_ARCH ]]; then
+# if '--external-lib-arch' was used - pick the first matching one
+if [[ ! -z $EXTERNAL_LIB_ARCH ]]; then
   NONE_MATCHED=true
   for potential_match in "${CORES[@]}"; do
-    if [[ $potential_match == "$TLIB_ARCH"* ]]; then
+    if [[ $potential_match == "$EXTERNAL_LIB_ARCH"* ]]; then
       CORES=("$potential_match")
-      echo "Compiling tlib for $potential_match"
+      echo "Compiling external lib for $potential_match"
       NONE_MATCHED=false
       break
     fi
   done
   if $NONE_MATCHED ; then
-    echo "Failed to match any tlib arch"
+    echo "Failed to match any external lib arch"
     exit 1
   fi
+fi
+
+# build KVM - currently it's supported only on Linux
+if $ON_LINUX && [[ "$HOST_ARCH" == "i386" ]] && [[ -z $EXTERNAL_LIB_ARCH || "${CORES[@]}" == "i386kvm.le" ]]; then
+    KVM_CORE_DIR="$CORES_BUILD_PATH/virt"
+    mkdir -p $KVM_CORE_DIR
+    pushd "$KVM_CORE_DIR" > /dev/null
+    cmake "$CORES_PATH/virt"
+    cmake --build . -j$(nproc)
+    CORE_BIN_DIR=$CORES_BIN_PATH/lib
+    mkdir -p $CORE_BIN_DIR
+    cp -u -v *.so $CORE_BIN_DIR/
+    popd > /dev/null
 fi
 
 # build tlib
 for core_config in "${CORES[@]}"
 do
+    if [[ $core_config == *"kvm"* ]]; then
+        continue
+    fi
+
     CORE="$(echo $core_config | cut -d '.' -f 1)"
     ENDIAN="$(echo $core_config | cut -d '.' -f 2)"
     BITS=32
@@ -454,7 +486,7 @@ do
     popd > /dev/null
 done
 
-if $TLIB_ONLY
+if $EXTERNAL_LIB_ONLY
 then
     exit 0
 fi
@@ -478,6 +510,21 @@ else
 fi
 cp lib/resources/llvm/$LLVM_LIB.$LIB_EXT $OUT_BIN_DIR/libllvm-disas.$LIB_EXT
 
+# on arm64 macOS System.Drawing.Common can't find libgdiplus so we symlink it to the output directory
+# this is only used for `FrameBufferTester`
+if [[ $RID == "osx-arm64" ]]; then
+  GDIPLUS_PATH="/opt/homebrew/lib/libgdiplus.dylib"
+  if [ -e $GDIPLUS_PATH ]; then
+    # For some reason System.Drawing.Common does not search the binary root when running from a source build
+    # but does for a package, so just link it to both locations so the packaging scripts do not have to be updated
+    ln -s -f $GDIPLUS_PATH $OUT_BIN_DIR/runtimes/osx-arm64/native/libgdiplus.dylib
+    mkdir -p $OUT_BIN_DIR/osx-arm64
+    ln -s -f $GDIPLUS_PATH $OUT_BIN_DIR/osx-arm64/libgdiplus.dylib
+  else
+    echo "libgdiplus.dylib not found by build.sh, FrameBufferTester might not work"
+  fi
+fi
+
 # build packages after successful compilation
 params=""
 
@@ -498,9 +545,23 @@ then
     echo "Renode built to $EXPORT_DIRECTORY"
 fi
 
-if $PACKAGES && $NIGHTLY
+if $NIGHTLY
 then
     params="$params -n"
+fi
+
+if $SOURCE_PACKAGE
+then
+    if $NET && $ON_LINUX
+    then
+        # Source package bundles nuget dependencies required for building the dotnet version of Renode
+        # so it can only be built when using dotnet. The generated package can also be used with Mono/.NETFramework
+        # Source packages are best built first, so it does not have to copy and then delete the packages from the `output` directory
+        $ROOT_PATH/tools/packaging/make_source_package.sh $params
+    else
+        echo "Source package can only be built using .NET on Linux. Exiting!"
+        exit 1
+    fi
 fi
 
 if $PACKAGES
@@ -514,19 +575,16 @@ then
             eval "dotnet publish -maxcpucount:1 -f $TFM --self-contained false $(build_args_helper "${PARAMS[@]}") $TARGET"
             export RID TFM
             $ROOT_PATH/tools/packaging/make_linux_dotnet_package.sh $params
-            # Source package bundles nuget dependencies required for building the dotnet version of Renode
-            # so it can only be built when using dotnet. The generated package can also be used with Mono/.NETFramework
-            $ROOT_PATH/tools/packaging/make_source_package.sh $params
-        elif $ON_WINDOWS && ! $PORTABLE
+        elif $ON_WINDOWS
         then
             # No Non portable dotnet package on windows yet
             echo "Only portable dotnet packages are supported on windows. Rerun build.sh with -t flag to build portable"
             exit 1
         elif $ON_OSX
         then
-            eval "dotnet publish -maxcpucount:1 -f $TFM --self-contained false $(build_args_helper "${PARAMS[@]}") $TARGET"
-            export RID TFM
-            $ROOT_PATH/tools/packaging/make_osx_dotnet_package.sh $params
+            # No Non portable dotnet package on macOS
+            echo "Only portable dotnet packages are supported on macOS. Rerun build.sh with -t flag to build portable"
+            exit 1
         fi
     else
         $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_packages.sh $params
@@ -539,7 +597,7 @@ then
     if $NET
     then
         # maxcpucount:1 to avoid an error with multithreaded publish
-	echo "RID = $RID"
+        echo "RID = $RID"
         eval "dotnet publish -maxcpucount:1 -r $RID -f $TFM --self-contained true $(build_args_helper "${PARAMS[@]}") $TARGET"
         export RID TFM
         $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_portable_dotnet.sh $params
@@ -553,3 +611,4 @@ then
         fi
     fi
 fi
+

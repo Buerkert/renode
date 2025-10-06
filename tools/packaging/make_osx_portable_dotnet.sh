@@ -11,7 +11,7 @@ RENODE_OUTPUT_BINARY=$RENODE_OUTPUT_DIR/publish/Renode
 DESTINATION=renode_${VERSION}-dotnet_portable
 
 # create MacOS app structure
-MACOS_APP_DIR=RenodePortable.app
+MACOS_APP_DIR=Renode.app
 PACKAGES=output/packages
 OUTPUT=$BASE/$PACKAGES
 mkdir -p $MACOS_APP_DIR/Contents/{MacOS,Resources}/
@@ -20,8 +20,7 @@ INSTALL_DIR=/Applications/Renode.app/Contents/MacOS
 DIR=$MACOS_APP_DIR/Contents/MacOS
 
 OS_NAME=macos
-# OSX version of sed requires backup appendix when in-place editing, backups are removed later on
-SED_COMMAND="sed -i.sed_backup"
+SED_COMMAND="sed -i ''"
 
 . common_copy_files_portable.sh
 
@@ -30,9 +29,6 @@ cp $RENODE_OUTPUT_DIR/*.dylib $DIR
 cp $RENODE_OUTPUT_DIR/../libllvm-disas.dylib $DIR
 
 chmod +x $DIR/renode
-
-# remove sed backups
-find $MACOS_APP_DIR -name *.sed_backup -exec rm {} \;
 
 cp macos/macos_run.sh $MACOS_APP_DIR/Contents/MacOS
 cp macos/Info.plist $MACOS_APP_DIR/Contents/Info.plist
@@ -44,7 +40,7 @@ OUTPUT=$BASE/$PACKAGES
 
 # Create dmg file
 mkdir -p $OUTPUT
-hdiutil create -volname Renode_$VERSION -srcfolder $MACOS_APP_DIR -ov -format UDZO $OUTPUT/renode_$VERSION\_dotnet_portable.dmg
+hdiutil create -volname Renode_$VERSION -srcfolder $MACOS_APP_DIR -ov -format UDZO $OUTPUT/renode-$VERSION-dotnet.$RID-portable.dmg
 
 # Cleanup
 rm -rf $MACOS_APP_DIR
