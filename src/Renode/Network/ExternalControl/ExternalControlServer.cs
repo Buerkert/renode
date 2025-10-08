@@ -38,6 +38,7 @@ namespace Antmicro.Renode.Network
             commandHandlers.Register(new GetTime(this));
             commandHandlers.Register(new ADC(this));
             commandHandlers.Register(new GPIOPort(this));
+            commandHandlers.Register(new SystemBus(this));
 
             var getMachineHandler = new GetMachine(this);
             Machines = getMachineHandler;
@@ -453,7 +454,7 @@ namespace Antmicro.Renode.Network
             }
 
 #pragma warning disable 649
-            [PacketField, Width(2)]
+            [PacketField, Width(bytes: 2)]
             public byte[] MagicField;
             [PacketField, Width(8)]
             public Command Command;
