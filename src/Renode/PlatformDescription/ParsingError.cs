@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2023 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -10,7 +10,7 @@ namespace Antmicro.Renode.PlatformDescription
     public enum ParsingError
     {
         SyntaxError = 0,
-        TypeNotSpecifiedInFirstVariableUse = 1,
+        VariableNeverDeclared = 1,
         VariableAlreadyDeclared = 2,
         EmptyEntry = 3,
         TypeNotResolved = 4,
@@ -26,7 +26,7 @@ namespace Antmicro.Renode.PlatformDescription
         IrqSourceIsNotNumberedGpioOutput = 14,
         AmbiguousDefaultIrqSource = 15,
         IrqSourceUsedMoreThanOnce = 16,
-        IrqDestinationUsedMoreThanOnce = 17,
+        DuplicateUsing = 17,
         NotLocalGpioReceiver = 18,
         MoreThanOneInitAttribute = 19,
         MissingReference = 20,
@@ -56,5 +56,7 @@ namespace Antmicro.Renode.PlatformDescription
         UninitializedSourceIrqObject = 44,
         RegistrationOrderCycle = 45,
         AliasedAndNormalArgumentName = 46,
+        ResetSectionRegistrationError = 47,
+        MoreThanOneResetAttribute = 48,
     }
 }

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2024 Antmicro
+// Copyright (c) 2010-2025 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -8,6 +8,7 @@ using System;
 using System.Linq;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Peripherals.CPU;
+using Antmicro.Renode.Peripherals.Miscellaneous;
 using Antmicro.Renode.PlatformDescription;
 using Antmicro.Renode.PlatformDescription.Syntax;
 using Antmicro.Renode.Utilities;
@@ -292,7 +293,7 @@ not a single line '''";
             var exception = Assert.Throws<ParsingException>(() => ProcessSource(source));
             Assert.AreEqual(ParsingError.SyntaxError, exception.Error);
             var position = exception.Message.Split(new string[] { Environment.NewLine }, StringSplitOptions.None)[1];
-            Assert.AreEqual("At 4:18:", position);
+            Assert.AreEqual("At 3:37:", position);
         }
 
         [Test]
@@ -349,6 +350,24 @@ not a single line '''";
             MockCPU mock;
             Assert.IsTrue(machine.TryGetByName("sysbus.cpu", out mock));
             Assert.AreEqual("this is \'''\nnot a single line ", mock.Placeholder);
+        }
+
+        [Test]
+        public void ShouldNotTreatDoubleSlashInMultilineStringAsComment()
+        {
+            var source = @"
+cpu: Antmicro.Renode.UnitTests.Mocks.MockCPU @ sysbus
+    Placeholder: ''' // this is //
+// not
+a comment // neither is this
+or //this
+or// this
+or this // '''";
+
+            ProcessSource(source);
+            MockCPU mock;
+            Assert.IsTrue(machine.TryGetByName("sysbus.cpu", out mock));
+            Assert.AreEqual(" // this is //\n// not\na comment // neither is this\nor //this\nor// this\nor this // ", mock.Placeholder);
         }
 
         [Test, Ignore("Ignored")]
@@ -655,6 +674,28 @@ sender:
         }
 
         [Test]
+        public void ShouldCombineIfInterruptUsedSecondTimeInEntryAsDestination()
+        {
+            var source = @"
+receiver: Antmicro.Renode.UnitTests.Mocks.MockReceiver @ sysbus
+sender: Antmicro.Renode.UnitTests.Mocks.MockIrqSenderWithTwoInterrupts @ sysbus
+    Irq -> receiver@0
+    AnotherIrq -> receiver@0";
+
+            ProcessSource(source);
+            Assert.IsTrue(machine.TryGetByName("sysbus.sender", out MockIrqSenderWithTwoInterrupts sender));
+            Assert.IsTrue(machine.TryGetByName("sysbus.receiver", out MockReceiver receiver));
+
+            Assert.AreEqual(0, sender.Irq.Endpoints[0].Number);
+            Assert.AreEqual(1, sender.AnotherIrq.Endpoints[0].Number);
+            Assert.IsInstanceOf(typeof(CombinedInput), sender.Irq.Endpoints[0].Receiver);
+            var combiner = (CombinedInput)sender.Irq.Endpoints[0].Receiver;
+            Assert.AreEqual(0, combiner.OutputLine.Endpoints[0].Number);
+            Assert.AreEqual(receiver, combiner.OutputLine.Endpoints[0].Receiver);
+            Assert.AreEqual(combiner, sender.AnotherIrq.Endpoints[0].Receiver);
+        }
+
+        [Test]
         public void ShouldFailOnUsingAlreadyRegisteredPeripheralsName()
         {
             var source = @"
@@ -741,7 +782,7 @@ peri:
         Increment";
 
             ProcessSource(source);
-            initHandlerMock.Verify(x => x.Execute(It.IsAny<IInitable>(), new[] { "Increment", "Increment" }, It.IsAny<Action<string>>()));
+            scriptHandlerMock.Verify(x => x.Execute(It.IsAny<IScriptable>(), new[] { "Increment", "Increment" }, It.IsAny<Action<string>>()));
         }
 
         [Test]
@@ -759,7 +800,7 @@ peri:
 
 
             ProcessSource(source);
-            initHandlerMock.Verify(x => x.Execute(It.IsAny<IInitable>(), new[] { "Increment", "Increment", "Increment" }, It.IsAny<Action<string>>()));
+            scriptHandlerMock.Verify(x => x.Execute(It.IsAny<IScriptable>(), new[] { "Increment", "Increment", "Increment" }, It.IsAny<Action<string>>()));
         }
 
         [Test]
@@ -771,7 +812,7 @@ sysbus:
         WriteByte 0 1";
 
             ProcessSource(source);
-            initHandlerMock.Verify(x => x.Execute(It.IsAny<IInitable>(), new[] { "WriteByte 0 1" }, It.IsAny<Action<string>>()));
+            scriptHandlerMock.Verify(x => x.Execute(It.IsAny<IScriptable>(), new[] { "WriteByte 0 1" }, It.IsAny<Action<string>>()));
         }
 
         [Test]
@@ -791,9 +832,44 @@ peri:
         Increment";
             
             var errorMessage = "Invalid init section";
-            initHandlerMock.Setup(x => x.Validate(It.IsAny<IInitable>(), out errorMessage)).Returns(false);
+            scriptHandlerMock.Setup(x => x.ValidateInit(It.IsAny<IScriptable>(), out errorMessage)).Returns(false);
             var exception = Assert.Throws<ParsingException>(() => ProcessSource(source, a));
             Assert.AreEqual(ParsingError.InitSectionValidationError, exception.Error);
+        }
+
+        [Test]
+        public void ShouldReplaceReset()
+        {
+            var source = @"
+peri: Antmicro.Renode.UnitTests.Mocks.EmptyPeripheral @ sysbus <0, 1>
+    reset:
+        Increment
+
+peri:
+    reset:
+        Increment
+        Increment";
+
+            ProcessSource(source);
+            scriptHandlerMock.Verify(x => x.RegisterReset(It.IsAny<IScriptable>(), new[] { "Increment", "Increment" }, It.IsAny<Action<string>>()));
+        }
+
+        [Test]
+        public void ShouldAddReset()
+        {
+            var source = @"
+peri: Antmicro.Renode.UnitTests.Mocks.EmptyPeripheral
+    reset:
+        Increment
+
+peri:
+    reset add:
+        Increment
+        Increment";
+
+
+            ProcessSource(source);
+            scriptHandlerMock.Verify(x => x.RegisterReset(It.IsAny<IScriptable>(), new[] { "Increment", "Increment", "Increment" }, It.IsAny<Action<string>>()));
         }
 
         [Test]
@@ -1088,6 +1164,27 @@ peripheral: Antmicro.Renode.Tests.UnitTests.Mocks.MachineTestPeripheral @ sysbus
             Assert.DoesNotThrow(() => ProcessSource(source));
         }
 
+        [Test]
+        public void ShouldAcceptPreviousRegistrationPoint()
+        {
+            var source = @"
+mock: @ sysbus
+mock: Antmicro.Renode.UnitTests.Mocks.MockCPU";
+
+            Assert.DoesNotThrow(() => ProcessSource(source));
+        }
+
+        [Test]
+        public void ShouldRejectPreviousIncompatibleRegistrationPoint()
+        {
+            var source = @"
+mock: @ sysbus <0, 1>
+mock: Antmicro.Renode.UnitTests.Mocks.MockCPU";
+
+            var exception = Assert.Throws<ParsingException>(() => ProcessSource(source));
+            Assert.AreEqual(ParsingError.NoCtorForRegistrationPoint, exception.Error);
+        }
+
         [OneTimeSetUp]
         public void Init()
         {
@@ -1103,9 +1200,9 @@ peripheral: Antmicro.Renode.Tests.UnitTests.Mocks.MachineTestPeripheral @ sysbus
         {
             machine = new Machine();
             EmulationManager.Instance.CurrentEmulation.AddMachine(machine, "machine");
-            initHandlerMock = new Mock<IInitHandler>();
+            scriptHandlerMock = new Mock<IScriptHandler>();
             string nullMessage = null;
-            initHandlerMock.Setup(x => x.Validate(It.IsAny<IInitable>(), out nullMessage)).Returns(true);
+            scriptHandlerMock.Setup(x => x.ValidateInit(It.IsAny<IScriptable>(), out nullMessage)).Returns(true);
         }
 
         [TearDown]
@@ -1123,11 +1220,11 @@ peripheral: Antmicro.Renode.Tests.UnitTests.Mocks.MachineTestPeripheral @ sysbus
             {
                 usingResolver.With(letters[i - 1].ToString(), sources[i]);
             }
-            var creationDriver = new CreationDriver(machine, usingResolver, initHandlerMock.Object);
+            var creationDriver = new CreationDriver(machine, usingResolver, scriptHandlerMock.Object);
             creationDriver.ProcessDescription(sources[0]);
         }
 
-        private Mock<IInitHandler> initHandlerMock;
+        private Mock<IScriptHandler> scriptHandlerMock;
         private Machine machine;
     }
 }

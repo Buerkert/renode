@@ -13,7 +13,9 @@ using System.Text;
 using Antmicro.Migrant;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Exceptions;
+using Antmicro.Renode.Peripherals;
 using Antmicro.Renode.Peripherals.UART;
+using Antmicro.Renode.Peripherals.USB;
 using Antmicro.Renode.Utilities;
 using TermSharp.Vt100;
 
@@ -24,7 +26,29 @@ namespace Antmicro.Renode.Integrations
         public static void RecordToAsciinema(this IUART uart, string filePath, bool useVirtualTimeStamps = false, int width = 80, int height = 24)
         {
             var emulation = EmulationManager.Instance.CurrentEmulation;
-            if(!emulation.TryGetMachineForPeripheral(uart, out var machine))
+            IMachine machine = null;
+            // This is a temporary solution and should be addressed later
+            var cdcAcmUart = uart as CDCToUARTConverter;
+            if(cdcAcmUart != null)
+            {
+                // In USB, the CDC ACM UART isn't enabled before enumeration.
+                // We use Children here, assuming that after enumeration the
+                // UART will be available.
+                var devices = cdcAcmUart.Children;
+                foreach(var device in devices)
+                {
+                    if(emulation.TryGetMachineForPeripheral(device.Peripheral, out machine))
+                    {
+                        break;
+                    }
+                }
+                
+                if(machine == null)
+                {
+                    throw new RecoverableException("Could not find machine for the given CDC ACM UART");
+                }
+            }
+            else if(!emulation.TryGetMachineForPeripheral(uart, out machine))
             {
                 throw new RecoverableException("Could not find machine for the given UART");
             }
@@ -96,15 +120,10 @@ namespace Antmicro.Renode.Integrations
                 value = value.Replace(mapping.Item1, mapping.Item2);
             }
             var builder = new StringBuilder();
-            var nonPrintable = new UnicodeCategory[]
-            {
-                UnicodeCategory.Control,
-                UnicodeCategory.OtherNotAssigned,
-                UnicodeCategory.Surrogate
-            };
             foreach(var c in value)
             {
-                if(nonPrintable.Contains(char.GetUnicodeCategory(c)) || char.IsControl(c))
+                bool isAscii = c < 128;
+                if(!isAscii || char.IsControl(c))
                 {
                     var encodedValue = "\\u" + ((int)c).ToString("x4");
                     builder.Append(encodedValue);

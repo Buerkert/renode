@@ -7,7 +7,6 @@ mach create $name
 
 machine LoadPlatformDescription @platforms/cpus/zynqmp.repl
 machine SetSerialExecution True
-sysbus SilenceRange <0xFF0F0104 0x100>  # Silencing QSPI accesses to speed up boot time
 showAnalyzer uart0
 showAnalyzer uart1
 
@@ -22,12 +21,10 @@ $rootfs?=    @https://dl.antmicro.com/projects/renode/zynq-us_plus--rootfs.ext2-
 macro reset
 """
     apu0 PC 0x1000000
-    apu1 IsHalted true
-    apu2 IsHalted true
-    apu3 IsHalted true
+    cluster0 IsHalted true
+    apu0 IsHalted false
 
-    rpu0 IsHalted true
-    rpu1 IsHalted true
+    cluster1 IsHalted true
 
     # We register ttc0 to rpu0 because it is used by philosophers sample
     # running on rpu0.
